@@ -10,7 +10,7 @@ from models.user import User as DBUser
 from models.number import Number
 import bot.keyboards as kb
 import bot.messages as msg
-from services import pva_service
+from services import pva_service  # Import the service module directly
 from workers import pricing_worker, payment_worker
 
 main_router = Router()
@@ -24,7 +24,6 @@ class OrderState(StatesGroup):
     confirming_price = State()
 
 async def get_or_create_user(session, telegram_user: User) -> DBUser:
-    # ... (this function is unchanged)
     query = select(DBUser).where(DBUser.telegram_id == telegram_user.id)
     result = await session.execute(query)
     user = result.scalar_one_or_none()
@@ -47,7 +46,6 @@ async def cq_order_number(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(msg.SELECT_NUMBER_TYPE, reply_markup=kb.number_type_keyboard())
     await state.set_state(OrderState.choosing_type)
 
-# ... Add cq_my_numbers and cq_support handlers here ...
 @main_router.callback_query(F.data == "my_numbers")
 async def cq_my_numbers(callback: CallbackQuery, session):
     await callback.answer()
@@ -69,7 +67,6 @@ async def cq_support(callback: CallbackQuery):
     support_text = "🆘 <b>Help & Support</b>\n\n📧 <b>Email:</b>\n• info@numrow.com\n• gidatechnologies@gmail.com"
     await callback.message.edit_text(support_text, reply_markup=kb.main_menu_keyboard())
 
-
 # --- BACK BUTTONS & CANCEL ---
 @main_router.callback_query(F.data.startswith(kb.CB_BACK))
 async def cq_back_handler(callback: CallbackQuery, state: FSMContext):
@@ -80,7 +77,7 @@ async def cq_back_handler(callback: CallbackQuery, state: FSMContext):
         await state.clear()
         await callback.message.edit_text(msg.welcome_message(callback.from_user.full_name), reply_markup=kb.main_menu_keyboard())
     elif action == "country_select":
-        await cq_order_number(callback, state) # Go back to type selection
+        await cq_order_number(callback, state)
     elif action == "service_select":
         data = await state.get_data()
         is_rent = data.get('is_rent', False)
@@ -109,9 +106,11 @@ async def cq_country_selected(callback: CallbackQuery, state: FSMContext):
     country_id = callback.data.split(':')[1]
     data = await state.get_data()
     is_rent = data.get('is_rent', False)
-    country_name = next((c['name'] for c in await pva_service.get_countries(is_rent) if c['id'] == country_id), None)
-    if not country_name: return
     
+    countries = await pva_service.get_countries(is_rent)
+    country_name = next((c['name'] for c in countries if c['id'] == country_id), None)
+    if not country_name: return
+
     await state.update_data(country_id=country_id, country_name=country_name)
     services = await pva_service.get_services(country_id, is_rent=is_rent)
     await callback.message.edit_text(msg.SELECT_SERVICE, reply_markup=kb.service_selection_keyboard(services))
