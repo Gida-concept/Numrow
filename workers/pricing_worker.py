@@ -11,12 +11,10 @@ from services.pva_service import pva_service
 from utils.logger import app_logger
 
 async def _get_live_fx_rate() -> Decimal:
-    """ Fetches the live USD to NGN exchange rate (MOCK). """
     await asyncio.sleep(0.1)
     return Decimal("1550.75")
 
 def _calculate_final_ngn(pva_usd_price: Decimal, fx_rate_to_use: Decimal) -> int:
-    """ Applies markup, converts to NGN, and rounds up. """
     markup_multiplier = Decimal(1 + (settings.PRICE_MARKUP_PERCENTAGE / 100))
     final_usd = pva_usd_price * markup_multiplier
     final_ngn_unrounded = final_usd * fx_rate_to_use
@@ -25,10 +23,6 @@ def _calculate_final_ngn(pva_usd_price: Decimal, fx_rate_to_use: Decimal) -> int
     return final_ngn_rounded
 
 async def get_final_price(country_id: str, service_id: str, number_type: str, rent_days: Optional[int] = None) -> tuple[Optional[int], Optional[str], Optional[int]]:
-    """
-    The main public function to get the final price.
-    Returns: (final_ngn_price, price_reference_id, duration_in_minutes)
-    """
     if number_type == 'rent' and not rent_days:
         raise ValueError("rent_days must be provided for rental pricing")
 
@@ -59,8 +53,8 @@ async def get_final_price(country_id: str, service_id: str, number_type: str, re
         if pva_price_data:
             duration_minutes = rent_days * 24 * 60
 
-    if not pva_price_data or 'cost_usd' not in pva_price_data:
-        app_logger.error(f"Could not retrieve USD price for {cache_key}")
+    if not pva_price_data or 'cost_usd' not in pva_price_data or pva_price_data['cost_usd'] <= 0:
+        app_logger.error(f"Could not retrieve a valid, non-zero USD price for {cache_key}")
         return None, None, None
         
     pva_usd_price = Decimal(str(pva_price_data['cost_usd']))
