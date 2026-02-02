@@ -1,0 +1,32 @@
+# Core Bot Framework
+aiogram>=3.2.0
+
+# Asynchronous HTTP requests (for APIs like Paystack, PVA)
+aiohttp>=3.8.0
+
+# Database & ORM
+# SQLAlchemy is the Object-Relational Mapper
+# asyncpg is the driver for asynchronous PostgreSQL communication
+SQLAlchemy>=2.0.0
+asyncpg>=0.27.0
+
+# Caching and Task Queues
+# redis is the client library for our Redis cache
+redis>=5.0.0
+
+# Data Validation and Settings Management
+# Pydantic is used for data validation and managing settings from environment variables
+pydantic>=2.4.0
+pydantic-settings>=2.0.0
+
+# Environment Variable Loading
+# Loads variables from a .env file into the environment for local development
+python-dotenv>=1.0.0
+
+# Database Migrations
+# Alembic is the standard tool for handling database schema changes with SQLAlchemy
+alembic>=1.12.0
+
+# Logging
+# A simple, powerful logging library
+loguru>=0.7.0
