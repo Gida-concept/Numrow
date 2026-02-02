@@ -10,7 +10,7 @@ from models.user import User as DBUser
 from models.number import Number
 import bot.keyboards as kb
 import bot.messages as msg
-from services import pva_service  # Import the service module directly
+from services.pva_service import pva_service  # Import the service module directly
 from workers import pricing_worker, payment_worker
 
 main_router = Router()
@@ -157,3 +157,4 @@ async def cq_pay_now(callback: CallbackQuery, state: FSMContext, session):
         )
     else:
         await callback.message.answer(msg.GENERIC_ERROR)
+
