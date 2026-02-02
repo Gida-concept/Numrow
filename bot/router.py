@@ -10,7 +10,7 @@ from models.user import User as DBUser
 from models.number import Number
 import bot.keyboards as kb
 import bot.messages as msg
-from services.pva_service import pva_service  # Import the service module directly
+from services.pva_service import pva_service
 from workers import pricing_worker, payment_worker
 
 main_router = Router()
@@ -39,7 +39,7 @@ async def handle_start(message: Message, session):
     user_data = await get_or_create_user(session, message.from_user)
     await message.answer(msg.welcome_message(user_data.full_name), reply_markup=kb.main_menu_keyboard())
 
-# --- MAIN MENU ---
+# --- MAIN MENU & TOP-LEVEL ACTIONS ---
 @main_router.callback_query(F.data == "order_number")
 async def cq_order_number(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -48,6 +48,7 @@ async def cq_order_number(callback: CallbackQuery, state: FSMContext):
 
 @main_router.callback_query(F.data == "my_numbers")
 async def cq_my_numbers(callback: CallbackQuery, session):
+    # ... (code is correct and remains the same)
     await callback.answer()
     user_data = await get_or_create_user(session, callback.from_user)
     query = select(Number).where(Number.user_id == user_data.id, Number.status == "active").order_by(Number.created_at.desc())
@@ -63,11 +64,12 @@ async def cq_my_numbers(callback: CallbackQuery, session):
 
 @main_router.callback_query(F.data == "support")
 async def cq_support(callback: CallbackQuery):
+    # ... (code is correct and remains the same)
     await callback.answer()
     support_text = "🆘 <b>Help & Support</b>\n\n📧 <b>Email:</b>\n• info@numrow.com\n• gidatechnologies@gmail.com"
     await callback.message.edit_text(support_text, reply_markup=kb.main_menu_keyboard())
 
-# --- BACK BUTTONS & CANCEL ---
+# --- UNIVERSAL BACK BUTTON HANDLER ---
 @main_router.callback_query(F.data.startswith(kb.CB_BACK))
 async def cq_back_handler(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -76,15 +78,18 @@ async def cq_back_handler(callback: CallbackQuery, state: FSMContext):
     if action == "main_menu":
         await state.clear()
         await callback.message.edit_text(msg.welcome_message(callback.from_user.full_name), reply_markup=kb.main_menu_keyboard())
+    
+    elif action == "type_select":
+        await cq_order_number(callback, state) # Go back to rent/temp choice
+    
     elif action == "country_select":
-        await cq_order_number(callback, state)
-    elif action == "service_select":
         data = await state.get_data()
         is_rent = data.get('is_rent', False)
         countries = await pva_service.get_countries(is_rent=is_rent)
         await callback.message.edit_text(msg.SELECT_COUNTRY, reply_markup=kb.country_selection_keyboard(countries))
         await state.set_state(OrderState.choosing_country)
-    elif action == "type_select":
+        
+    elif action == "service_select":
         data = await state.get_data()
         country_id = data.get('country_id')
         is_rent = data.get('is_rent', False)
@@ -92,7 +97,8 @@ async def cq_back_handler(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text(msg.SELECT_SERVICE, reply_markup=kb.service_selection_keyboard(services))
         await state.set_state(OrderState.choosing_service)
 
-# --- FULL ORDER FLOW ---
+# --- FULL ORDER FLOW WITH SEARCH AND BACK ---
+
 @main_router.callback_query(OrderState.choosing_type, F.data.startswith(kb.CB_PREFIX_NUMBER_TYPE))
 async def cq_type_selected(callback: CallbackQuery, state: FSMContext):
     is_rent = callback.data.split(':')[1] == 'rent'
@@ -101,19 +107,54 @@ async def cq_type_selected(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(msg.SELECT_COUNTRY, reply_markup=kb.country_selection_keyboard(countries))
     await state.set_state(OrderState.choosing_country)
 
+# Country Search
+@main_router.callback_query(OrderState.choosing_country, F.data == "start_search_country")
+async def cq_start_search_country(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await callback.message.edit_text(msg.SEARCH_COUNTRY_PROMPT)
+    await state.set_state(OrderState.searching_country)
+
+@main_router.message(OrderState.searching_country)
+async def process_country_search(message: Message, state: FSMContext):
+    search_query = message.text.lower().strip()
+    data = await state.get_data()
+    all_countries = await pva_service.get_countries(is_rent=data.get('is_rent', False))
+    filtered = [c for c in all_countries if search_query in c['name'].lower()]
+    reply_markup = kb.country_selection_keyboard(filtered if filtered else all_countries)
+    reply_text = f"Found {len(filtered)} results for '{message.text}':" if filtered else msg.NO_RESULTS
+    await message.answer(reply_text, reply_markup=reply_markup)
+    await state.set_state(OrderState.choosing_country)
+
 @main_router.callback_query(OrderState.choosing_country, F.data.startswith(kb.CB_PREFIX_COUNTRY))
 async def cq_country_selected(callback: CallbackQuery, state: FSMContext):
     country_id = callback.data.split(':')[1]
     data = await state.get_data()
     is_rent = data.get('is_rent', False)
-    
-    countries = await pva_service.get_countries(is_rent)
-    country_name = next((c['name'] for c in countries if c['id'] == country_id), None)
+    all_countries = await pva_service.get_countries(is_rent=is_rent)
+    country_name = next((c['name'] for c in all_countries if c['id'] == country_id), None)
     if not country_name: return
 
     await state.update_data(country_id=country_id, country_name=country_name)
     services = await pva_service.get_services(country_id, is_rent=is_rent)
     await callback.message.edit_text(msg.SELECT_SERVICE, reply_markup=kb.service_selection_keyboard(services))
+    await state.set_state(OrderState.choosing_service)
+
+# Service Search
+@main_router.callback_query(OrderState.choosing_service, F.data == "start_search_service")
+async def cq_start_search_service(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await callback.message.edit_text(msg.SEARCH_SERVICE_PROMPT)
+    await state.set_state(OrderState.searching_service)
+
+@main_router.message(OrderState.searching_service)
+async def process_service_search(message: Message, state: FSMContext):
+    search_query = message.text.lower().strip()
+    data = await state.get_data()
+    all_services = await pva_service.get_services(data.get('country_id'), is_rent=data.get('is_rent', False))
+    filtered = [s for s in all_services if search_query in s['name'].lower()]
+    reply_markup = kb.service_selection_keyboard(filtered if filtered else all_services)
+    reply_text = f"Found {len(filtered)} results for '{message.text}':" if filtered else msg.NO_RESULTS
+    await message.answer(reply_text, reply_markup=reply_markup)
     await state.set_state(OrderState.choosing_service)
 
 @main_router.callback_query(OrderState.choosing_service, F.data.startswith(kb.CB_PREFIX_SERVICE))
@@ -126,8 +167,8 @@ async def process_price_request(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(msg.FETCHING_PRICE)
     selections = await state.get_data()
     price, price_ref, duration = await pricing_worker.get_final_price(
-        country_id=selections['country_id'], service_id=selections['service_id'],
-        is_rent=selections['is_rent']
+        country_id=selections.get('country_id'), service_id=selections.get('service_id'),
+        is_rent=selections.get('is_rent')
     )
     if not price:
         await callback.message.edit_text(msg.SERVICE_UNAVAILABLE, reply_markup=kb.main_menu_keyboard())
@@ -157,4 +198,3 @@ async def cq_pay_now(callback: CallbackQuery, state: FSMContext, session):
         )
     else:
         await callback.message.answer(msg.GENERIC_ERROR)
-
