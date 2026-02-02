@@ -1,3 +1,28 @@
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+# --- Callback Data Prefixes ---
+CB_PREFIX_COUNTRY = "country:"
+CB_PREFIX_SERVICE = "service:"
+CB_PREFIX_NUMBER_TYPE = "numtype:"
+CB_PREFIX_PAY = "pay:"
+CB_PREFIX_CANCEL = "cancel:"
+
+# --- Main Menu & General Keyboards ---
+def main_menu_keyboard() -> InlineKeyboardMarkup:
+    """Creates the main menu keyboard."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="🛒 Order a Number", callback_data="order_number")
+    )
+    builder.row(
+        InlineKeyboardButton(text="My Numbers", callback_data="my_numbers"),
+        InlineKeyboardButton(text="Help & Support", callback_data="support")
+    )
+    return builder.as_markup()
+
+# --- Dynamic Keyboards for Service Selection ---
+
 def country_selection_keyboard(countries: list[dict], enable_search: bool = True) -> InlineKeyboardMarkup:
     """
     Creates a keyboard for selecting a country.
@@ -50,4 +75,48 @@ def service_selection_keyboard(services: list[dict], enable_search: bool = True)
     
     builder.row(*bottom_buttons)
     
+    return builder.as_markup()
+
+def number_type_keyboard() -> InlineKeyboardMarkup:
+    """Creates a keyboard for selecting number type (temp vs rent)."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text="⏳ Temporary (20 mins)", 
+            callback_data=f"{CB_PREFIX_NUMBER_TYPE}temporary"
+        ),
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="🗓️ Rent (3+ days)",
+            callback_data=f"{CB_PREFIX_NUMBER_TYPE}rent"
+        )
+    )
+    return builder.as_markup()
+
+# --- Payment Keyboard ---
+
+def payment_keyboard(payment_id: str, price_ref: str) -> InlineKeyboardMarkup:
+    """
+    Creates the 'Pay Now' keyboard.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text="💳 Pay Now",
+            callback_data=f"{CB_PREFIX_PAY}{payment_id}:{price_ref}"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="❌ Cancel",
+            callback_data=f"{CB_PREFIX_CANCEL}main_menu"
+        )
+    )
+    return builder.as_markup()
+
+def payment_link_keyboard(url: str) -> InlineKeyboardMarkup:
+    """Creates a keyboard with a button to open the payment URL."""
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🔗 Open Payment Page", url=url))
     return builder.as_markup()
