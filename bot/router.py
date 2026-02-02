@@ -1,13 +1,12 @@
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, User # <-- Make sure User is imported here
+from aiogram.types import Message, CallbackQuery, User
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select # <-- Import select for querying
+from sqlalchemy.future import select
 
 from utils.logger import app_logger
-from models.user import User as DBUser # <-- Alias DBUser to avoid name conflict
+from models.user import User as DBUser
 import bot.keyboards as kb
 import bot.messages as msg
 
@@ -22,12 +21,10 @@ class OrderState(StatesGroup):
     confirming_price = State()
 
 # --- User Upsert Logic ---
-async def get_or_create_user(session: AsyncSession, telegram_user: User) -> DBUser:
+async def get_or_create_user(session, telegram_user: User) -> DBUser:
     """
     Retrieves a user from the DB or creates a new one if they don't exist.
-    This is an "upsert" operation.
     """
-    # Use a select query to find the user by their telegram_id
     query = select(DBUser).where(DBUser.telegram_id == telegram_user.id)
     result = await session.execute(query)
     user = result.scalar_one_or_none()
@@ -48,9 +45,8 @@ async def get_or_create_user(session: AsyncSession, telegram_user: User) -> DBUs
 # --- Command Handlers ---
 
 @main_router.message(CommandStart())
-async def handle_start(message: Message, session: AsyncSession):
+async def handle_start(message: Message, session):
     """Handler for the /start command."""
-    # Pass the correct user object directly from the message
     user_data = await get_or_create_user(session, message.from_user)
     app_logger.info(f"User {user_data.telegram_id} started the bot.")
     
@@ -65,16 +61,14 @@ async def handle_start(message: Message, session: AsyncSession):
 async def cq_order_number(callback: CallbackQuery, state: FSMContext):
     """Starts the number ordering flow."""
     app_logger.info(f"User {callback.from_user.id} started order flow.")
-    await callback.answer() # Acknowledge the callback
+    await callback.answer()
 
-    # --- PLACEHOLDER: Fetch countries from PVA service ---
     mock_countries = [
         {'id': '0', 'name': '🇳🇬 Nigeria'},
         {'id': '1', 'name': '🇬🇭 Ghana'},
         {'id': '12', 'name': '🇺🇸 USA'},
         {'id': '2', 'name': '🇬🇧 UK'},
     ]
-    # --- END PLACEHOLDER ---
 
     await callback.message.edit_text(
         msg.SELECT_COUNTRY,
@@ -92,14 +86,12 @@ async def cq_country_selected(callback: CallbackQuery, state: FSMContext):
     await callback.answer(f"Country {country_id} selected.")
     app_logger.info(f"User {callback.from_user.id} selected country: {country_id}")
 
-    # --- PLACEHOLDER: Fetch services for the selected country ---
     mock_services = [
         {'id': 'wa', 'name': 'WhatsApp'},
         {'id': 'tg', 'name': 'Telegram'},
         {'id': 'fb', 'name': 'Facebook'},
         {'id': 'go', 'name': 'Google'},
     ]
-    # --- END PLACEHOLDER ---
     
     await callback.message.edit_text(
         msg.SELECT_SERVICE,
@@ -122,7 +114,7 @@ async def cq_service_selected(callback: CallbackQuery, state: FSMContext):
     await state.set_state(OrderState.choosing_number_type)
 
 @main_router.callback_query(OrderState.choosing_number_type, F.data.startswith(kb.CB_PREFIX_NUMBER_TYPE))
-async def cq_type_selected(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
+async def cq_type_selected(callback: CallbackQuery, state: FSMContext):
     """Handles number type selection and fetches the final price."""
     number_type = callback.data.split(':')[1]
     await state.update_data(number_type=number_type)
