@@ -26,7 +26,6 @@ class OrderState(StatesGroup):
 
 async def get_or_create_user(session, telegram_user: User) -> DBUser:
     """Gets or creates a user in the database."""
-    # ... (this function remains the same)
     query = select(DBUser).where(DBUser.telegram_id == telegram_user.id)
     result = await session.execute(query)
     user = result.scalar_one_or_none()
@@ -48,7 +47,6 @@ async def handle_start(message: Message, session):
     await message.answer(msg.welcome_message(user_data.full_name), reply_markup=kb.main_menu_keyboard())
 
 # --- MAIN MENU ---
-
 @main_router.callback_query(F.data == "order_number")
 async def cq_order_number(callback: CallbackQuery, state: FSMContext):
     """Starts the number ordering flow by showing countries."""
@@ -56,7 +54,58 @@ async def cq_order_number(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(msg.SELECT_COUNTRY, reply_markup=kb.country_selection_keyboard(PVA_PINS_COUNTRIES))
     await state.set_state(OrderState.choosing_country)
 
-# ... (my_numbers and support handlers go here) ...
+@main_router.callback_query(F.data == "my_numbers")
+async def cq_my_numbers(callback: CallbackQuery, session):
+    """Shows the user's active numbers."""
+    await callback.answer()
+    
+    user_data = await get_or_create_user(session, callback.from_user)
+    
+    query = select(Number).where(
+        Number.user_id == user_data.id,
+        Number.status == "active"
+    ).order_by(Number.created_at.desc())
+    
+    result = await session.execute(query)
+    numbers = result.scalars().all()
+    
+    if not numbers:
+        response_text = (
+            "📭 <b>You have no active numbers.</b>\n\n"
+            "Click 'Order a Number' to get started."
+        )
+    else:
+        response_text = "📱 <b>Your Active Numbers:</b>\n\n"
+        for num in numbers:
+            response_text += (
+                f"📞 <code>{num.phone_number}</code>\n"
+                f"   Service: {num.service_code.upper()}\n"
+                f"   Expires: {num.expires_at.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+            )
+    
+    await callback.message.edit_text(
+        response_text,
+        reply_markup=kb.main_menu_keyboard()
+    )
+
+@main_router.callback_query(F.data == "support")
+async def cq_support(callback: CallbackQuery):
+    """Shows support contact information."""
+    await callback.answer()
+    
+    support_text = (
+        "🆘 <b>Help & Support</b>\n\n"
+        "If you need assistance or have any questions, please contact us:\n\n"
+        "📧 <b>Email:</b>\n"
+        "• info@numrow.com\n"
+        "• gidatechnologies@gmail.com\n\n"
+        "We typically respond within 24 hours."
+    )
+    
+    await callback.message.edit_text(
+        support_text,
+        reply_markup=kb.main_menu_keyboard()
+    )
 
 # --- COUNTRY FLOW ---
 @main_router.callback_query(OrderState.choosing_country, F.data == "start_search_country")
@@ -77,7 +126,7 @@ async def process_country_search(message: Message, state: FSMContext):
 @main_router.callback_query(OrderState.choosing_country, F.data.startswith(kb.CB_PREFIX_COUNTRY))
 async def cq_country_selected(callback: CallbackQuery, state: FSMContext):
     country_id = callback.data.split(':')[1]
-    await state.update_data(country_id=country_id) # The ID is the name for this API
+    await state.update_data(country_id=country_id)
     await callback.answer("Country selected.")
     await callback.message.edit_text(msg.SELECT_SERVICE, reply_markup=kb.service_selection_keyboard(PVA_PINS_SERVICES))
     await state.set_state(OrderState.choosing_service)
@@ -106,10 +155,7 @@ async def cq_service_selected(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(msg.SELECT_NUMBER_TYPE, reply_markup=kb.number_type_keyboard())
     await state.set_state(OrderState.choosing_number_type)
 
-# --- The rest of the router (number type, pricing, payment) remains the same ---
-# ...
 # --- NUMBER TYPE & DURATION FLOW ---
-
 @main_router.callback_query(OrderState.choosing_number_type, F.data.startswith(kb.CB_PREFIX_NUMBER_TYPE))
 async def cq_type_selected(callback: CallbackQuery, state: FSMContext):
     number_type = callback.data.split(':')[1]
@@ -121,9 +167,8 @@ async def cq_type_selected(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("🗓️ Please select the rental duration:", reply_markup=kb.rent_duration_keyboard())
         await state.set_state(OrderState.choosing_rent_duration)
 
-@main_router.callback_query(OrderState.choosing_number_type, F.data == "back_to_type")
+@main_router.callback_query(OrderState.choosing_rent_duration, F.data == "back_to_type")
 async def cq_back_to_type(callback: CallbackQuery, state: FSMContext):
-    """Handles 'Back' button from rent duration selection."""
     await callback.message.edit_text(msg.SELECT_NUMBER_TYPE, reply_markup=kb.number_type_keyboard())
     await state.set_state(OrderState.choosing_number_type)
 
@@ -134,9 +179,7 @@ async def cq_rent_duration_selected(callback: CallbackQuery, state: FSMContext):
     await process_price_request(callback, state)
 
 # --- PRICING & PAYMENT ---
-
 async def process_price_request(callback: CallbackQuery, state: FSMContext):
-    """Helper function to fetch and display the final price."""
     await callback.message.edit_text(msg.FETCHING_PRICE)
     user_selections = await state.get_data()
     
