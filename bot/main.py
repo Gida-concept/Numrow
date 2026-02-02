@@ -1,6 +1,7 @@
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.client.default import DefaultBotProperties # <-- This is the new requirement
 
 from config.settings import settings
 from bot.router import main_router
@@ -15,7 +16,11 @@ from database.connection import get_db_session
 storage = MemoryStorage()
 
 # Create Bot and Dispatcher instances
-bot = Bot(token=settings.BOT_TOKEN, parse_mode=ParseMode.HTML)
+# UPDATED: In Aiogram 3.7+, parse_mode must be passed inside DefaultBotProperties
+bot = Bot(
+    token=settings.BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
 dp = Dispatcher(storage=storage)
 
 # --- Middleware Registration ---
