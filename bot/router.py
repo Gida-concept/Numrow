@@ -14,10 +14,37 @@ import bot.messages as msg
 # Create a router instance
 main_router = Router()
 
+# --- MOCK DATA (Global for search filtering) ---
+ALL_COUNTRIES = [
+    {'id': '0', 'name': '🇳🇬 Nigeria'},
+    {'id': '1', 'name': '🇬🇭 Ghana'},
+    {'id': '12', 'name': '🇺🇸 USA'},
+    {'id': '2', 'name': '🇬🇧 UK'},
+    {'id': '3', 'name': '🇨🇦 Canada'},
+    {'id': '4', 'name': '🇧🇷 Brazil'},
+    {'id': '5', 'name': '🇷🇺 Russia'},
+    {'id': '6', 'name': '🇮🇳 India'},
+    {'id': '7', 'name': '🇿🇦 South Africa'},
+]
+
+ALL_SERVICES = [
+    {'id': 'wa', 'name': 'WhatsApp'},
+    {'id': 'tg', 'name': 'Telegram'},
+    {'id': 'fb', 'name': 'Facebook'},
+    {'id': 'go', 'name': 'Google/Gmail'},
+    {'id': 'ig', 'name': 'Instagram'},
+    {'id': 'tw', 'name': 'Twitter/X'},
+    {'id': 'nf', 'name': 'Netflix'},
+    {'id': 'am', 'name': 'Amazon'},
+    {'id': 'tik', 'name': 'TikTok'},
+]
+
 # Define the states for the order process
 class OrderState(StatesGroup):
     choosing_country = State()
+    searching_country = State() # NEW STATE
     choosing_service = State()
+    searching_service = State() # NEW STATE
     choosing_number_type = State()
     confirming_price = State()
 
@@ -54,32 +81,24 @@ async def handle_start(message: Message, session):
         reply_markup=kb.main_menu_keyboard()
     )
 
-# --- Main Menu Callback Handlers ---
+# --- Main Menu Callbacks ---
 
 @main_router.callback_query(F.data == "order_number")
 async def cq_order_number(callback: CallbackQuery, state: FSMContext):
     """Starts the number ordering flow."""
-    app_logger.info(f"User {callback.from_user.id} started order flow.")
     await callback.answer()
-
-    mock_countries = [
-        {'id': '0', 'name': '🇳🇬 Nigeria'},
-        {'id': '1', 'name': '🇬🇭 Ghana'},
-        {'id': '12', 'name': '🇺🇸 USA'},
-        {'id': '2', 'name': '🇬🇧 UK'},
-    ]
-
+    
+    # Show initial list of countries
     await callback.message.edit_text(
         msg.SELECT_COUNTRY,
-        reply_markup=kb.country_selection_keyboard(mock_countries)
+        reply_markup=kb.country_selection_keyboard(ALL_COUNTRIES)
     )
     await state.set_state(OrderState.choosing_country)
 
 @main_router.callback_query(F.data == "my_numbers")
 async def cq_my_numbers(callback: CallbackQuery, session):
-    """Shows the user's active numbers."""
+    """Shows active numbers."""
     await callback.answer()
-    
     user_data = await get_or_create_user(session, callback.from_user)
     
     query = select(Number).where(
@@ -91,10 +110,7 @@ async def cq_my_numbers(callback: CallbackQuery, session):
     numbers = result.scalars().all()
     
     if not numbers:
-        response_text = (
-            "📭 <b>You have no active numbers.</b>\n\n"
-            "Click 'Order a Number' to get started."
-        )
+        response_text = "📭 <b>You have no active numbers.</b>\n\nClick 'Order a Number' to get started."
     else:
         response_text = "📱 <b>Your Active Numbers:</b>\n\n"
         for num in numbers:
@@ -104,31 +120,51 @@ async def cq_my_numbers(callback: CallbackQuery, session):
                 f"   Expires: {num.expires_at.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
             )
     
-    await callback.message.edit_text(
-        response_text,
-        reply_markup=kb.main_menu_keyboard()
-    )
+    await callback.message.edit_text(response_text, reply_markup=kb.main_menu_keyboard())
 
 @main_router.callback_query(F.data == "support")
 async def cq_support(callback: CallbackQuery):
-    """Shows support contact information."""
+    """Shows support info."""
     await callback.answer()
-    
     support_text = (
         "🆘 <b>Help & Support</b>\n\n"
-        "If you need assistance or have any questions, please contact us:\n\n"
-        "📧 <b>Email:</b>\n"
-        "• info@numrow.com\n"
-        "• gidatechnologies@gmail.com\n\n"
-        "We typically respond within 24 hours."
+        "📧 <b>Email:</b>\n• info@numrow.com\n• gidatechnologies@gmail.com"
     )
-    
-    await callback.message.edit_text(
-        support_text,
-        reply_markup=kb.main_menu_keyboard()
-    )
+    await callback.message.edit_text(support_text, reply_markup=kb.main_menu_keyboard())
 
-# --- Order Flow FSM Handlers ---
+# --- COUNTRY SEARCH LOGIC ---
+
+@main_router.callback_query(OrderState.choosing_country, F.data == "start_search_country")
+async def cq_start_search_country(callback: CallbackQuery, state: FSMContext):
+    """Asks user to type country name."""
+    await callback.answer()
+    await callback.message.edit_text(msg.SEARCH_COUNTRY_PROMPT)
+    await state.set_state(OrderState.searching_country)
+
+@main_router.message(OrderState.searching_country)
+async def process_country_search(message: Message, state: FSMContext):
+    """Filters countries based on user input."""
+    search_query = message.text.lower().strip()
+    
+    # Filter the global list
+    filtered_countries = [
+        c for c in ALL_COUNTRIES 
+        if search_query in c['name'].lower()
+    ]
+    
+    if not filtered_countries:
+        await message.answer(
+            msg.NO_RESULTS,
+            reply_markup=kb.country_selection_keyboard(ALL_COUNTRIES)
+        )
+    else:
+        await message.answer(
+            f"🔍 Found {len(filtered_countries)} results for '{message.text}':",
+            reply_markup=kb.country_selection_keyboard(filtered_countries)
+        )
+    
+    # Return to choosing state so clicking a button works
+    await state.set_state(OrderState.choosing_country)
 
 @main_router.callback_query(OrderState.choosing_country, F.data.startswith(kb.CB_PREFIX_COUNTRY))
 async def cq_country_selected(callback: CallbackQuery, state: FSMContext):
@@ -136,19 +172,44 @@ async def cq_country_selected(callback: CallbackQuery, state: FSMContext):
     country_id = callback.data.split(':')[1]
     await state.update_data(country_id=country_id)
     await callback.answer(f"Country selected.")
-    app_logger.info(f"User {callback.from_user.id} selected country: {country_id}")
-
-    mock_services = [
-        {'id': 'wa', 'name': 'WhatsApp'},
-        {'id': 'tg', 'name': 'Telegram'},
-        {'id': 'fb', 'name': 'Facebook'},
-        {'id': 'go', 'name': 'Google'},
-    ]
     
+    # Show initial list of services
     await callback.message.edit_text(
         msg.SELECT_SERVICE,
-        reply_markup=kb.service_selection_keyboard(mock_services)
+        reply_markup=kb.service_selection_keyboard(ALL_SERVICES)
     )
+    await state.set_state(OrderState.choosing_service)
+
+# --- SERVICE SEARCH LOGIC ---
+
+@main_router.callback_query(OrderState.choosing_service, F.data == "start_search_service")
+async def cq_start_search_service(callback: CallbackQuery, state: FSMContext):
+    """Asks user to type service name."""
+    await callback.answer()
+    await callback.message.edit_text(msg.SEARCH_SERVICE_PROMPT)
+    await state.set_state(OrderState.searching_service)
+
+@main_router.message(OrderState.searching_service)
+async def process_service_search(message: Message, state: FSMContext):
+    """Filters services based on user input."""
+    search_query = message.text.lower().strip()
+    
+    filtered_services = [
+        s for s in ALL_SERVICES 
+        if search_query in s['name'].lower()
+    ]
+    
+    if not filtered_services:
+        await message.answer(
+            msg.NO_RESULTS,
+            reply_markup=kb.service_selection_keyboard(ALL_SERVICES)
+        )
+    else:
+        await message.answer(
+            f"🔍 Found {len(filtered_services)} results for '{message.text}':",
+            reply_markup=kb.service_selection_keyboard(filtered_services)
+        )
+    
     await state.set_state(OrderState.choosing_service)
 
 @main_router.callback_query(OrderState.choosing_service, F.data.startswith(kb.CB_PREFIX_SERVICE))
@@ -157,7 +218,6 @@ async def cq_service_selected(callback: CallbackQuery, state: FSMContext):
     service_id = callback.data.split(':')[1]
     await state.update_data(service_id=service_id)
     await callback.answer(f"Service selected.")
-    app_logger.info(f"User {callback.from_user.id} selected service: {service_id}")
 
     await callback.message.edit_text(
         msg.SELECT_NUMBER_TYPE,
@@ -165,18 +225,17 @@ async def cq_service_selected(callback: CallbackQuery, state: FSMContext):
     )
     await state.set_state(OrderState.choosing_number_type)
 
+# --- Price & Payment Logic ---
+
 @main_router.callback_query(OrderState.choosing_number_type, F.data.startswith(kb.CB_PREFIX_NUMBER_TYPE))
 async def cq_type_selected(callback: CallbackQuery, state: FSMContext):
-    """Handles number type selection and fetches the final price."""
+    """Handles number type selection."""
     number_type = callback.data.split(':')[1]
     await state.update_data(number_type=number_type)
     
     user_selections = await state.get_data()
-    app_logger.info(f"User {callback.from_user.id} completed selection: {user_selections}")
-
     await callback.message.edit_text(msg.FETCHING_PRICE)
 
-    # Call the pricing worker
     from workers.pricing_worker import get_final_ngn_price
     
     final_price_ngn, price_ref = await get_final_ngn_price(
@@ -199,26 +258,19 @@ async def cq_type_selected(callback: CallbackQuery, state: FSMContext):
 
 @main_router.callback_query(F.data.startswith(kb.CB_PREFIX_PAY))
 async def cq_pay_now(callback: CallbackQuery, state: FSMContext, session):
-    """Handles the 'Pay Now' button click."""
-    await callback.answer("Creating your payment link...")
+    """Handles Pay Now."""
+    await callback.answer("Creating payment link...")
     
-    callback_parts = callback.data.split(':', 2)
-    if len(callback_parts) < 3:
-        await callback.message.answer(msg.GENERIC_ERROR)
-        return
-    
-    payment_id_placeholder = callback_parts[1]
-    price_ref = callback_parts[2]
+    parts = callback.data.split(':', 2)
+    if len(parts) < 3: return
+    price_ref = parts[2]
     
     user_data = await get_or_create_user(session, callback.from_user)
-    
     selections = await state.get_data()
     
     from workers.pricing_worker import get_final_ngn_price
     final_price_ngn, _ = await get_final_ngn_price(
-        selections.get('country_id', '0'),
-        selections.get('service_id', 'wa'),
-        selections.get('number_type', 'temporary')
+        selections.get('country_id'), selections.get('service_id'), selections.get('number_type')
     )
     
     if not final_price_ngn:
@@ -226,13 +278,7 @@ async def cq_pay_now(callback: CallbackQuery, state: FSMContext, session):
         return
     
     from workers.payment_worker import create_payment_link
-    
-    payment_url = await create_payment_link(
-        session=session,
-        user_id=user_data.id,
-        final_ngn_price=final_price_ngn,
-        price_ref=price_ref
-    )
+    payment_url = await create_payment_link(session, user_data.id, final_price_ngn, price_ref)
     
     if payment_url:
         await callback.message.edit_text(
@@ -242,13 +288,11 @@ async def cq_pay_now(callback: CallbackQuery, state: FSMContext, session):
     else:
         await callback.message.answer(msg.GENERIC_ERROR)
 
-# --- Cancel Handler ---
+# --- Cancel ---
 @main_router.callback_query(F.data.startswith(kb.CB_PREFIX_CANCEL))
 async def cq_cancel_flow(callback: CallbackQuery, state: FSMContext):
-    """Allows user to cancel and return to main menu."""
-    await callback.answer("Operation cancelled.")
+    await callback.answer("Cancelled.")
     await state.clear()
-    
     await callback.message.edit_text(
         msg.welcome_message(callback.from_user.full_name),
         reply_markup=kb.main_menu_keyboard()
