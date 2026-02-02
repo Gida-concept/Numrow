@@ -39,18 +39,13 @@ class Rental(BaseModel):
 
 
     # --- Relationships ---
+    # We use string references ("User", "Number") to avoid circular imports.
     user: Mapped["User"] = relationship("User", back_populates="rentals")
     number: Mapped["Number"] = relationship("Number", back_populates="rental")
-    payment: Mapped["Payment"] = relationship()
-
+    payment: Mapped["Payment"] = relationship("Payment")
 
     def __repr__(self) -> str:
         return (
             f"<Rental(id={self.id}, user_id={self.user_id}, number_id={self.number_id}, "
             f"status='{self.status}', active_until='{self.active_until}')>"
         )
-
-
-# Add the reverse relationships to the other models
-User.rentals = relationship("Rental", back_populates="user", cascade="all, delete-orphan")
-Number.rental = relationship("Rental", back_populates="number", uselist=False, cascade="all, delete-orphan")
