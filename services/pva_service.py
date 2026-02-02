@@ -18,8 +18,18 @@ class PvaService:
         url = f"{PVA_PINS_BASE_URL}{endpoint}"
         try:
             async with aiohttp.ClientSession() as session:
+                # Add the API key to every request that needs it
+                if "customer" in params:
+                    params['customer'] = self.api_key
+                    
                 async with session.get(url, params=params, timeout=30) as response:
                     response.raise_for_status()
+                    # Handle text response for get_number.php
+                    if endpoint == "get_number.php":
+                        text_response = await response.text()
+                        app_logger.debug(f"PVA Pins API Response for {endpoint}: {text_response}")
+                        return text_response
+                        
                     data = await response.json()
                     app_logger.debug(f"PVA Pins API Response for {endpoint}: {data}")
                     return data
@@ -42,9 +52,8 @@ class PvaService:
         data = await self._make_request("load_countries.php", params)
         
         if data and isinstance(data, list):
-            # The API uses 'full_name' for the name and 'id' for the ID. We map this.
             countries = [{'id': str(c['id']), 'name': c['full_name']} for c in data]
-            await redis_client.set(cache_key, json.dumps(countries), ex=3600) # Cache for 1 hour
+            await redis_client.set(cache_key, json.dumps(countries), ex=3600)
             return countries
         return []
 
@@ -64,9 +73,11 @@ class PvaService:
         data = await self._make_request("load_apps.php", params)
         
         if data and isinstance(data, list):
-            # The API uses 'full_name' for the app's real name and 'deduct' for the price
-            services = [{'id': s['full_name'], 'name': s['full_name'], 'cost_usd': float(s['deduct'])} for s in data if float(s.get('deduct', 0)) > 0]
-            await redis_client.set(cache_key, json.dumps(services), ex=900) # Cache for 15 minutes
+            services = [
+                {'id': str(s['id']), 'name': s['full_name'], 'cost_usd': float(s['deduct'])} 
+                for s in data if float(s.get('deduct', 0)) > 0
+            ]
+            await redis_client.set(cache_key, json.dumps(services), ex=900)
             return services
         return []
 
@@ -75,45 +86,64 @@ class PvaService:
         services = await self.get_services(country_id, is_rent)
         for service in services:
             if service['id'] == service_id:
-                # The API doesn't give duration for temp numbers, so we use a default.
-                # For rent, the duration is fixed by the provider.
-                duration = DEFAULT_TEMP_DURATION_MINUTES # Default for both for now
+                duration = DEFAULT_TEMP_DURATION_MINUTES
                 return {'cost_usd': service['cost_usd'], 'duration_minutes': duration}
         return None
 
     # --- LIVE ACTIONS (BUYING & SMS) ---
-    async def buy_number(self, service_id: str, country_name: str, is_rent: bool = False) -> Optional[dict]:
-        """LIVE: Purchases a new number."""
-        params = {'customer': self.api_key, 'app': service_id, 'country': country_name}
+    async def buy_number(self, service_id: str, country_id: str, country_name: str, is_rent: bool = False) -> Optional[dict]:
+        """LIVE: Purchases a new number. service_id is the numeric ID."""
+        services = await self.get_services(country_id, is_rent)
+        service_full_name = next((s['name'] for s in services if s['id'] == service_id), None)
+        
+        if not service_full_name:
+            app_logger.error(f"Could not find service with ID {service_id}")
+            return None
+        
+        params = {'customer': self.api_key, 'app': service_full_name, 'country': country_name}
         endpoint = "rent.php" if is_rent else "get_number.php"
         
         data = await self._make_request(endpoint, params)
         
-        if is_rent: # Rental API has a different response format
-            if data and data.get('code') == 100:
+        if is_rent:
+            if data and isinstance(data, dict) and data.get('code') == 100:
                 phone_number = data['data']
                 return {"activation_id": phone_number, "phone_number": phone_number}
-        else: # Temporary number API
+        else: # Temporary number
              if data and isinstance(data, str) and data.strip().startswith('+'):
                 phone_number = data.strip()
                 return {"activation_id": phone_number, "phone_number": phone_number}
         return None
 
-    async def get_sms(self, phone_number: str, service_id: str, country_name: str, is_rent: bool = False) -> Optional[dict]:
-        """LIVE: Polls for an SMS."""
-        params = {'customer': self.api_key, 'number': phone_number, 'app': service_id, 'country': country_name}
+    async def get_sms(self, phone_number: str, service_id: str, country_id: str, country_name: str, is_rent: bool = False) -> Optional[dict]:
+        """LIVE: Polls for an SMS. service_id is the numeric ID."""
+        services = await self.get_services(country_id, is_rent)
+        service_full_name = next((s['name'] for s in services if s['id'] == service_id), None)
+        
+        if not service_full_name:
+            return {"status": "ERROR"}
+        
+        params = {'customer': self.api_key, 'number': phone_number, 'app': service_full_name, 'country': country_name}
         endpoint = "load_rent_code.php" if is_rent else "get_sms.php"
         
+        # We need a separate request for text-based get_sms.php
+        if not is_rent:
+            url = f"{PVA_PINS_BASE_URL}{endpoint}"
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, timeout=30) as response:
+                        text_response = await response.text()
+                        if "you have not received any code yet" in text_response.lower():
+                            return {"status": "WAITING"}
+                        return {"status": "OK", "code": text_response}
+            except Exception as e:
+                app_logger.error(f"Text request failed for get_sms: {e}")
+                return {"status": "ERROR"}
+
+        # For rental (JSON response)
         response = await self._make_request(endpoint, params)
-        
-        if is_rent:
-            if response and isinstance(response, list) and len(response) > 0:
-                # Return the latest message
-                return {"status": "OK", "code": response[0]['message']}
-            return {"status": "WAITING"}
-        else: # Temporary number
-            if not response or "you have not received any code yet" in str(response).lower():
-                return {"status": "WAITING"}
-            return {"status": "OK", "code": str(response)}
+        if response and isinstance(response, list) and len(response) > 0:
+            return {"status": "OK", "code": response[0]['message']}
+        return {"status": "WAITING"}
 
 pva_service = PvaService(api_key=settings.PVA_API_KEY)
