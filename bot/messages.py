@@ -1,6 +1,5 @@
 """
 Centralized repository for all user-facing messages.
-This helps in maintaining a consistent tone and simplifies localization.
 """
 
 # --- Welcome & Main Menu ---
@@ -17,7 +16,7 @@ MAIN_MENU_TEXT = "Please choose a service from the menu:"
 # --- Service Selection Flow ---
 SELECT_COUNTRY = "Please select the country for the service:"
 SELECT_SERVICE = "Please select the service you need a number for:"
-SELECT_NUMBER_TYPE = "Please choose the number type:" # e.g., Temporary or Rent
+SELECT_NUMBER_TYPE = "Please choose the number type:"
 
 def service_selection_summary(country: str, service: str, number_type: str) -> str:
     """Shows the user their current selection."""
@@ -35,9 +34,7 @@ FETCHING_PRICE = "⚙️ Fetching the best price for you, please wait..."
 def final_price_message(price_ngn: float) -> str:
     """
     Displays the final, non-negotiable price in NGN to the user.
-    As per the blueprint, no breakdown is shown.
     """
-    # Format the NGN price with commas for thousands.
     formatted_price = f"{price_ngn:,.2f}"
     return (
         f"💰 <b>Final Price: ₦{formatted_price}</b>\n\n"
@@ -58,7 +55,6 @@ PAYMENT_SUCCESSFUL = (
 )
 
 PAYMENT_FAILED = "❌ <b>Payment Failed or Canceled.</b>\n\nPlease try again or select a different option."
-
 
 # --- Number & SMS Handling ---
 def number_issued_message(number: str, expiry_time: str) -> str:
@@ -86,3 +82,8 @@ GENERIC_ERROR = "⚠️ An unexpected error occurred. Please try again later or 
 PRICE_EXPIRED = "⚠️ The price for this service has expired. Please start over to get a new price."
 SERVICE_UNAVAILABLE = "Sorry, this service is currently unavailable. Please try again later."
 INVALID_SELECTION = "Invalid selection. Please use the buttons provided."
+
+# --- Search Prompts ---
+SEARCH_COUNTRY_PROMPT = "🔍 <b>Search Country</b>\n\nPlease type the name of the country you are looking for:"
+SEARCH_SERVICE_PROMPT = "🔍 <b>Search Service</b>\n\nPlease type the name of the service you are looking for:"
+NO_RESULTS = "❌ No matching results found. Showing all options again:"
