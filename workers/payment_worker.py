@@ -1,5 +1,6 @@
 import time
 import uuid
+from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -145,5 +146,6 @@ async def process_webhook_event(session: AsyncSession, payload: dict) -> bool:
     except Exception as e:
         app_logger.critical(f"Error triggering number purchase for payment {payment.id}: {e}", exc_info=True)
         return False
+
 
     return True
