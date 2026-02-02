@@ -11,16 +11,18 @@ from services.pva_service import pva_service
 from utils.logger import app_logger
 
 async def _get_live_fx_rate() -> Decimal:
+    """Provides the NGN to USD exchange rate."""
     await asyncio.sleep(0.1)
-    return Decimal("1600.00") # Use the cap as the rate for stability
+    return Decimal("1600.00") # Use a stable rate, e.g., the cap
 
 def _calculate_final_ngn(cost_usd: Decimal, fx_rate_to_use: Decimal) -> int:
+    """Applies markup, converts to NGN, and rounds up."""
     markup_multiplier = Decimal(1 + (settings.PRICE_MARKUP_PERCENTAGE / 100))
     final_usd = cost_usd * markup_multiplier
     final_ngn_unrounded = final_usd * fx_rate_to_use
     final_ngn_rounded = int(math.ceil(final_ngn_unrounded / 10)) * 10
     app_logger.info(f"Final NGN price: ₦{final_ngn_rounded} (from ${cost_usd:.4f} base)")
-    return final_n_rounded
+    return final_ngn_rounded # <-- TYPO FIXED HERE
 
 async def get_final_price(country_id: str, service_id: str, is_rent: bool) -> tuple[Optional[int], Optional[str], Optional[int]]:
     """
