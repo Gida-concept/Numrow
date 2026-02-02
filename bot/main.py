@@ -1,22 +1,19 @@
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.client.default import DefaultBotProperties # <-- This is the new requirement
+from aiogram.client.default import DefaultBotProperties
 
 from config.settings import settings
 from bot.router import main_router
+from bot.middlewares import DbSessionMiddleware
 from security.rate_limit import RateLimitMiddleware
 from utils.logger import app_logger
-from database.connection import get_db_session
+from database.connection import async_session_factory
 
 # --- Bot and Dispatcher Initialization ---
 
-# For FSM, we need to specify a storage. MemoryStorage is fine for simple cases.
-# For production, you might want to use a persistent storage like RedisStorage.
 storage = MemoryStorage()
 
-# Create Bot and Dispatcher instances
-# UPDATED: In Aiogram 3.7+, parse_mode must be passed inside DefaultBotProperties
 bot = Bot(
     token=settings.BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
@@ -24,18 +21,17 @@ bot = Bot(
 dp = Dispatcher(storage=storage)
 
 # --- Middleware Registration ---
+# Register middlewares on the ROUTER, not the dispatcher
 
-# Register our custom rate-limiting middleware.
-# This will apply to all incoming updates.
-dp.update.middleware(RateLimitMiddleware(limit=3, period=1))
-app_logger.info("Rate limiting middleware registered.")
+main_router.message.middleware(DbSessionMiddleware(session_pool=async_session_factory))
+main_router.callback_query.middleware(DbSessionMiddleware(session_pool=async_session_factory))
+app_logger.info("Database session middleware registered on router.")
+
+main_router.message.middleware(RateLimitMiddleware(limit=3, period=1))
+main_router.callback_query.middleware(RateLimitMiddleware(limit=3, period=1))
+app_logger.info("Rate limiting middleware registered on router.")
 
 # --- Router Inclusion ---
 
-# Include the main router that contains all command and callback handlers.
 dp.include_router(main_router)
 app_logger.info("Main router included.")
-
-# Pass the SQLAlchemy session factory to the dispatcher context
-# so it can be used in handlers via dependency injection.
-dp["session_factory"] = get_db_session
