@@ -23,7 +23,7 @@ class OrderState(StatesGroup):
 
 
 # --- User Upsert Logic ---
-async def get_or_create_user(session: AsyncSession, telegram_user: Message.from_user) -> User:
+async def get_or_create_user(session: AsyncSession, telegram_user: User) -> User:
     """
     Retrieves a user from the DB or creates a new one if they don't exist.
     This is an "upsert" operation.
@@ -165,4 +165,5 @@ async def cq_cancel_flow(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         msg.welcome_message(user.user.full_name),
         reply_markup=kb.main_menu_keyboard()
+
     )
