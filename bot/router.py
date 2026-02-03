@@ -1,4 +1,5 @@
 import math
+import aiogram.exceptions # <--- Added for exception handling
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, User
 from aiogram.filters import CommandStart
@@ -129,10 +130,17 @@ async def cq_list_countries(callback: CallbackQuery, state: FSMContext, page: in
     new_text = f"Select a country (Page {page}/{total_pages}):"
     new_markup = kb.paginated_list_keyboard(paginated_countries, kb.CB_PREFIX_COUNTRY, page, total_pages, f"{kb.CB_BACK}type_select")
 
-    if callback.message.text != new_text or callback.message.reply_markup != new_markup:
+    # Attempt to edit the message. If it's the same, Telegram will complain.
+    # We catch that specific error and handle it gracefully.
+    try:
         await callback.message.edit_text(new_text, reply_markup=new_markup)
-    else:
-        await callback.answer()
+    except aiogram.exceptions.TelegramBadRequest as e:
+        if "message is not modified" in e.message:
+            # If the message is identical, just acknowledge the callback to stop the loading spinner
+            await callback.answer()
+        else:
+            # If it's a different kind of BadRequest, re-raise it
+            raise
 
 @main_router.callback_query(OrderState.choosing_country, F.data == "start_search_country")
 async def cq_start_search_country(callback: CallbackQuery, state: FSMContext):
@@ -185,10 +193,13 @@ async def cq_list_services(callback: CallbackQuery, state: FSMContext, page: int
     new_text = f"Select a service (Page {page}/{total_pages}):"
     new_markup = kb.paginated_list_keyboard(paginated_services, kb.CB_PREFIX_SERVICE, page, total_pages, f"{kb.CB_BACK}country_select")
 
-    if callback.message.text != new_text or callback.message.reply_markup != new_markup:
+    try:
         await callback.message.edit_text(new_text, reply_markup=new_markup)
-    else:
-        await callback.answer()
+    except aiogram.exceptions.TelegramBadRequest as e:
+        if "message is not modified" in e.message:
+            await callback.answer()
+        else:
+            raise
 
 @main_router.callback_query(OrderState.choosing_service, F.data == "start_search_service")
 async def cq_start_search_service(callback: CallbackQuery, state: FSMContext):
