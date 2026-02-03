@@ -14,7 +14,6 @@ from services.pva_service import pva_service
 from utils.logger import app_logger
 from config.constants import REDIS_PRICING_LOCK_PREFIX, PRICE_LOCK_DURATION, DEFAULT_TEMP_DURATION_MINUTES
 from database.redis import redis_client
-from bot.main import bot # Import the bot object to send messages
 import bot.messages as msg
 
 async def create_payment_link(
@@ -32,7 +31,7 @@ async def create_payment_link(
             app_logger.error(f"Cannot create payment. User with DB ID {user_id} not found.")
             return None
         
-        user_email = f"user_{user.telegram_id}@numrow.com" # Use a consistent email format
+        user_email = f"user_{user.telegram_id}@numrow.com"
         amount_kobo = final_ngn_price * 100
         transaction_ref = f"pva-{user.id}-{uuid.uuid4().hex[:8]}"
 
@@ -65,10 +64,9 @@ async def create_payment_link(
         await session.rollback()
         return None
 
-async def process_webhook_event(session: AsyncSession, payload: dict) -> bool:
+async def process_webhook_event(bot, session: AsyncSession, payload: dict) -> bool:
     """
     Processes a 'charge.success' event from a Paystack webhook.
-    Returns True if the event was processed successfully, False otherwise.
     """
     event = payload.get("event")
     data = payload.get("data")
@@ -103,9 +101,7 @@ async def process_webhook_event(session: AsyncSession, payload: dict) -> bool:
         return False
         
     if verified_amount_kobo != payment.amount_ngn:
-        app_logger.error(
-            f"CRITICAL: Amount mismatch for '{reference}'. DB: {payment.amount_ngn}, Paystack: {verified_amount_kobo}."
-        )
+        app_logger.error(f"CRITICAL: Amount mismatch for '{reference}'. DB: {payment.amount_ngn}, Paystack: {verified_amount_kobo}.")
         payment.status = "disputed"
         await session.commit()
         return False
@@ -114,44 +110,36 @@ async def process_webhook_event(session: AsyncSession, payload: dict) -> bool:
     await session.commit()
     app_logger.info(f"Payment {payment.id} (ref: {reference}) successfully updated to 'successful'.")
 
-    # --- Trigger the number purchase (as per blueprint) ---
     try:
-        # 1. Parse details from the locked price reference
-        # Format: "pricing:COUNTRY_ID:SERVICE_ID:temp/rent"
         parts = payment.locked_price_ref.split(":")
         country_id = parts[1]
         service_id = parts[2]
         number_type = parts[3]
         is_rent = (number_type == 'rent')
 
-        # 2. We need the full country name for the API call
         countries = await pva_service.get_countries(is_rent=is_rent)
         country_name = next((c['name'] for c in countries if c['id'] == country_id), None)
 
         if not country_name:
-            app_logger.error(f"Could not find country name for ID {country_id}. Aborting number purchase.")
+            app_logger.error(f"Could not find country name for ID {country_id}. Aborting purchase.")
             return False
 
         app_logger.info(f"Triggering number purchase for service ID '{service_id}' in country '{country_name}'.")
         
-        # 3. Call buy_number with the CORRECT keyword arguments
         purchased_number_info = await pva_service.buy_number(
-            service_id=service_id,
-            country_id=country_id,
-            country_name=country_name,
-            is_rent=is_rent
+            service_id=service_id, country_id=country_id,
+            country_name=country_name, is_rent=is_rent
         )
 
         if purchased_number_info:
             app_logger.info(f"Successfully purchased number for payment {payment.id}: {purchased_number_info}")
             
-            # 4. Save the new number to the database
-            expiry_delta = timedelta(minutes=DEFAULT_TEMP_DURATION_MINUTES) # Use a default for now
+            expiry_delta = timedelta(minutes=DEFAULT_TEMP_DURATION_MINUTES)
             
             new_number = Number(
                 phone_number=purchased_number_info['phone_number'],
                 pva_activation_id=purchased_number_info['activation_id'],
-                service_code=service_id, # Store the numeric ID
+                service_code=service_id,
                 country_code=country_id,
                 status="active",
                 expires_at=datetime.now(timezone.utc) + expiry_delta,
@@ -161,7 +149,6 @@ async def process_webhook_event(session: AsyncSession, payload: dict) -> bool:
             session.add(new_number)
             await session.commit()
             
-            # 5. Send a success message to the user in Telegram
             expiry_string = f"in {expiry_delta.seconds // 60} minutes"
             await bot.send_message(
                 chat_id=payment.user.telegram_id, 
