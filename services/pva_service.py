@@ -1,5 +1,6 @@
 import aiohttp
 import json
+import re
 from typing import Optional, List, Dict
 
 from config.settings import settings
@@ -13,34 +14,32 @@ class PvaService:
             app_logger.warning("PVA_API_KEY is not set. The service will not function.")
         self.api_key = api_key
 
-    async def _make_request(self, endpoint: str, params: dict = None) -> Optional[Dict]:
-        """Helper to make requests and parse JSON response."""
+    async def _make_request(self, endpoint: str, params: dict = None, expect_json: bool = True) -> Optional[Dict]:
+        """Helper to make requests to the PVA Pins API."""
         url = f"{PVA_PINS_BASE_URL}{endpoint}"
         try:
             async with aiohttp.ClientSession() as session:
                 # Add the API key to every request that needs it
-                if "customer" in params:
+                if params and "customer" in params:
                     params['customer'] = self.api_key
                     
                 async with session.get(url, params=params, timeout=30) as response:
                     response.raise_for_status()
-                    # Handle text response for get_number.php
-                    if endpoint == "get_number.php":
+                    
+                    if not expect_json:
                         text_response = await response.text()
-                        app_logger.debug(f"PVA Pins API Response for {endpoint}: {text_response}")
+                        app_logger.debug(f"PVA Pins API Response (text) for {endpoint}: {text_response}")
                         return text_response
-                        
+
                     data = await response.json()
-                    app_logger.debug(f"PVA Pins API Response for {endpoint}: {data}")
+                    app_logger.debug(f"PVA Pins API Response (json) for {endpoint}: {data}")
                     return data
         except Exception as e:
             app_logger.error(f"Failed API request to {endpoint}: {e}")
             return None
             
     # --- LIVE LISTS & PRICING ---
-
     async def get_countries(self, is_rent: bool = False) -> List[Dict]:
-        """LIVE: Fetches all available countries from the API and caches them."""
         cache_key = f"pva_countries:{'rent' if is_rent else 'temp'}"
         cached = await redis_client.get(cache_key)
         if cached:
@@ -58,7 +57,6 @@ class PvaService:
         return []
 
     async def get_services(self, country_id: str, is_rent: bool = False) -> List[Dict]:
-        """LIVE: Fetches all available services for a country from the API and caches them."""
         cache_key = f"pva_services:{country_id}:{'rent' if is_rent else 'temp'}"
         cached = await redis_client.get(cache_key)
         if cached:
@@ -82,7 +80,6 @@ class PvaService:
         return []
 
     async def get_price_and_duration(self, service_id: str, country_id: str, is_rent: bool = False) -> Optional[dict]:
-        """Gets price and duration for a specific service by re-fetching the service list."""
         services = await self.get_services(country_id, is_rent)
         for service in services:
             if service['id'] == service_id:
@@ -92,7 +89,7 @@ class PvaService:
 
     # --- LIVE ACTIONS (BUYING & SMS) ---
     async def buy_number(self, service_id: str, country_id: str, country_name: str, is_rent: bool = False) -> Optional[dict]:
-        """LIVE: Purchases a new number. service_id is the numeric ID."""
+        """LIVE: Purchases a new number."""
         services = await self.get_services(country_id, is_rent)
         service_full_name = next((s['name'] for s in services if s['id'] == service_id), None)
         
@@ -103,20 +100,38 @@ class PvaService:
         params = {'customer': self.api_key, 'app': service_full_name, 'country': country_name}
         endpoint = "rent.php" if is_rent else "get_number.php"
         
-        data = await self._make_request(endpoint, params)
-        
-        if is_rent:
-            if data and isinstance(data, dict) and data.get('code') == 100:
-                phone_number = data['data']
-                return {"activation_id": phone_number, "phone_number": phone_number}
-        else: # Temporary number
-             if data and isinstance(data, str) and data.strip().startswith('+'):
-                phone_number = data.strip()
-                return {"activation_id": phone_number, "phone_number": phone_number}
+        # Use a more generic request that can handle both JSON and Text
+        url = f"{PVA_PINS_BASE_URL}{endpoint}"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, timeout=30) as response:
+                    response.raise_for_status()
+                    raw_response_text = await response.text()
+                    app_logger.info(f"RAW RESPONSE from {endpoint}: {raw_response_text}")
+
+                    # Intelligently parse the response
+                    try:
+                        # Try to parse as JSON (for rental responses)
+                        data = json.loads(raw_response_text)
+                        if is_rent and data.get('code') == 100:
+                            phone_number = data['data']
+                            return {"activation_id": phone_number, "phone_number": phone_number}
+                        
+                    except json.JSONDecodeError:
+                        # If not JSON, treat as plain text (for temporary numbers)
+                        # Check if it looks like a phone number
+                        match = re.search(r'\+?\d{10,}', raw_response_text)
+                        if match:
+                            phone_number = match.group(0)
+                            return {"activation_id": phone_number, "phone_number": phone_number}
+
+        except Exception as e:
+            app_logger.error(f"Error during buy_number request: {e}")
+
+        # If all parsing attempts fail, return None
         return None
 
     async def get_sms(self, phone_number: str, service_id: str, country_id: str, country_name: str, is_rent: bool = False) -> Optional[dict]:
-        """LIVE: Polls for an SMS. service_id is the numeric ID."""
         services = await self.get_services(country_id, is_rent)
         service_full_name = next((s['name'] for s in services if s['id'] == service_id), None)
         
@@ -126,24 +141,16 @@ class PvaService:
         params = {'customer': self.api_key, 'number': phone_number, 'app': service_full_name, 'country': country_name}
         endpoint = "load_rent_code.php" if is_rent else "get_sms.php"
         
-        # We need a separate request for text-based get_sms.php
-        if not is_rent:
-            url = f"{PVA_PINS_BASE_URL}{endpoint}"
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, params=params, timeout=30) as response:
-                        text_response = await response.text()
-                        if "you have not received any code yet" in text_response.lower():
-                            return {"status": "WAITING"}
-                        return {"status": "OK", "code": text_response}
-            except Exception as e:
-                app_logger.error(f"Text request failed for get_sms: {e}")
-                return {"status": "ERROR"}
+        if not is_rent: # Temporary number SMS check (expects text)
+            response_text = await self._make_request(endpoint, params, expect_json=False)
+            if not response_text or "you have not received any code yet" in response_text.lower():
+                return {"status": "WAITING"}
+            return {"status": "OK", "code": response_text}
 
-        # For rental (JSON response)
-        response = await self._make_request(endpoint, params)
-        if response and isinstance(response, list) and len(response) > 0:
-            return {"status": "OK", "code": response[0]['message']}
+        # Rental SMS check (expects JSON)
+        response_json = await self._make_request(endpoint, params, expect_json=True)
+        if response_json and isinstance(response_json, list) and len(response_json) > 0:
+            return {"status": "OK", "code": response_json[0]['message']}
         return {"status": "WAITING"}
 
 pva_service = PvaService(api_key=settings.PVA_API_KEY)
