@@ -97,9 +97,10 @@ async def cq_page_handler(callback: CallbackQuery, state: FSMContext):
     _, prefix, page_str = parts
     page = int(page_str)
     
-    if prefix == kb.CB_PREFIX_COUNTRY:
+    # FIX: Compare prefix without the colon, matching how keyboard generates it
+    if prefix == kb.CB_PREFIX_COUNTRY.rstrip(':'):
         await cq_list_countries(callback, state, page=page)
-    elif prefix == kb.CB_PREFIX_SERVICE:
+    elif prefix == kb.CB_PREFIX_SERVICE.rstrip(':'):
         await cq_list_services(callback, state, page=page)
 
 # --- FULL ORDER FLOW ---
@@ -244,3 +245,10 @@ async def cq_pay_now(callback: CallbackQuery, state: FSMContext, session):
         )
     else:
         await callback.message.answer(msg.GENERIC_ERROR)
+
+# --- CANCEL ---
+@main_router.callback_query(F.data.startswith(kb.CB_PREFIX_CANCEL))
+async def cq_cancel_flow(callback: CallbackQuery, state: FSMContext):
+    await callback.answer("Cancelled.")
+    await state.clear()
+    await callback.message.edit_text(msg.welcome_message(callback.from_user.full_name), reply_markup=kb.main_menu_keyboard())
