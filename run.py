@@ -17,7 +17,7 @@ async def paystack_webhook_handler(request: web.Request):
     """
     try:
         payload = await request.json()
-        app_logger.info(f"Received Paystack webhook: {payload.get('event')}")
+        app_logger.warning(f"Received Paystack webhook: {payload.get('event')}")
 
         # You should add signature verification here for production security
         # For now, we process it directly.
@@ -95,3 +95,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         app_logger.warning("Application stopped manually.")
+
