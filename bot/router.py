@@ -84,7 +84,6 @@ async def cq_back_handler(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text(msg.SELECT_COUNTRY, reply_markup=kb.initial_selection_keyboard("list_countries:1", "start_search_country", f"{kb.CB_BACK}type_select"))
         await state.set_state(OrderState.choosing_country)
     elif action == "service_select":
-        data = await state.get_data()
         await callback.message.edit_text(msg.SELECT_SERVICE, reply_markup=kb.initial_selection_keyboard("list_services:1", "start_search_service", f"{kb.CB_BACK}country_select"))
         await state.set_state(OrderState.choosing_service)
 
@@ -97,7 +96,6 @@ async def cq_page_handler(callback: CallbackQuery, state: FSMContext):
     _, prefix, page_str = parts
     page = int(page_str)
     
-    # FIX: Compare prefix without the colon, matching how keyboard generates it
     if prefix == kb.CB_PREFIX_COUNTRY.rstrip(':'):
         await cq_list_countries(callback, state, page=page)
     elif prefix == kb.CB_PREFIX_SERVICE.rstrip(':'):
@@ -128,10 +126,13 @@ async def cq_list_countries(callback: CallbackQuery, state: FSMContext, page: in
     paginated_countries = all_countries[start_index : start_index + ITEMS_PER_PAGE]
     total_pages = math.ceil(len(all_countries) / ITEMS_PER_PAGE)
     
-    await callback.message.edit_text(
-        f"Select a country (Page {page}/{total_pages}):",
-        reply_markup=kb.paginated_list_keyboard(paginated_countries, kb.CB_PREFIX_COUNTRY, page, total_pages, f"{kb.CB_BACK}type_select")
-    )
+    new_text = f"Select a country (Page {page}/{total_pages}):"
+    new_markup = kb.paginated_list_keyboard(paginated_countries, kb.CB_PREFIX_COUNTRY, page, total_pages, f"{kb.CB_BACK}type_select")
+
+    if callback.message.text != new_text or callback.message.reply_markup != new_markup:
+        await callback.message.edit_text(new_text, reply_markup=new_markup)
+    else:
+        await callback.answer()
 
 @main_router.callback_query(OrderState.choosing_country, F.data == "start_search_country")
 async def cq_start_search_country(callback: CallbackQuery, state: FSMContext):
@@ -181,10 +182,13 @@ async def cq_list_services(callback: CallbackQuery, state: FSMContext, page: int
     paginated_services = all_services[start_index : start_index + ITEMS_PER_PAGE]
     total_pages = math.ceil(len(all_services) / ITEMS_PER_PAGE)
     
-    await callback.message.edit_text(
-        f"Select a service (Page {page}/{total_pages}):",
-        reply_markup=kb.paginated_list_keyboard(paginated_services, kb.CB_PREFIX_SERVICE, page, total_pages, f"{kb.CB_BACK}country_select")
-    )
+    new_text = f"Select a service (Page {page}/{total_pages}):"
+    new_markup = kb.paginated_list_keyboard(paginated_services, kb.CB_PREFIX_SERVICE, page, total_pages, f"{kb.CB_BACK}country_select")
+
+    if callback.message.text != new_text or callback.message.reply_markup != new_markup:
+        await callback.message.edit_text(new_text, reply_markup=new_markup)
+    else:
+        await callback.answer()
 
 @main_router.callback_query(OrderState.choosing_service, F.data == "start_search_service")
 async def cq_start_search_service(callback: CallbackQuery, state: FSMContext):
@@ -245,10 +249,3 @@ async def cq_pay_now(callback: CallbackQuery, state: FSMContext, session):
         )
     else:
         await callback.message.answer(msg.GENERIC_ERROR)
-
-# --- CANCEL ---
-@main_router.callback_query(F.data.startswith(kb.CB_PREFIX_CANCEL))
-async def cq_cancel_flow(callback: CallbackQuery, state: FSMContext):
-    await callback.answer("Cancelled.")
-    await state.clear()
-    await callback.message.edit_text(msg.welcome_message(callback.from_user.full_name), reply_markup=kb.main_menu_keyboard())
