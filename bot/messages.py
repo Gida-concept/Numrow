@@ -14,9 +14,9 @@ def welcome_message(name: str) -> str:
 MAIN_MENU_TEXT = "Please choose a service from the menu:"
 
 # --- Service Selection Flow ---
-SELECT_COUNTRY = "Please select the country for the service:"
-SELECT_SERVICE = "Please select the service you need a number for:"
-SELECT_NUMBER_TYPE = "Please choose the number type:"
+SELECT_COUNTRY = "Please select a country. You can see the full list or search."
+SELECT_SERVICE = "Please select a service. You can see the full list or search."
+SELECT_NUMBER_TYPE = "Please select the type of number you need:"
 
 def service_selection_summary(country: str, service: str, number_type: str) -> str:
     """Shows the user their current selection."""
@@ -31,13 +31,21 @@ def service_selection_summary(country: str, service: str, number_type: str) -> s
 # --- Pricing and Payment ---
 FETCHING_PRICE = "⚙️ Fetching the best price for you, please wait..."
 
-def final_price_message(price_ngn: float) -> str:
-    """
-    Displays the final, non-negotiable price in NGN to the user.
-    """
-    formatted_price = f"{price_ngn:,.2f}"
+def final_price_message(price_ngn: float, duration_minutes: int) -> str:
+    """ Displays the final price and the active duration. """
+    formatted_price = f"{price_ngn:,.0f}" # No decimals for NGN
+    
+    if duration_minutes <= 0:
+        duration_text = "Standard period"
+    elif duration_minutes < 60:
+        duration_text = f"{duration_minutes} minutes"
+    else:
+        days = duration_minutes // (24 * 60)
+        duration_text = f"{days} day(s)"
+        
     return (
-        f"💰 <b>Final Price: ₦{formatted_price}</b>\n\n"
+        f"💰 <b>Final Price: ₦{formatted_price}</b>\n"
+        f"⏳ Active For: <b>{duration_text}</b>\n\n"
         "This is the total amount you will pay. Click 'Pay Now' to proceed."
     )
 
@@ -49,12 +57,8 @@ def payment_link_message(url: str) -> str:
         "I will notify you once the payment is confirmed."
     )
 
-PAYMENT_SUCCESSFUL = (
-    "🎉 <b>Payment Successful!</b>\n\n"
-    "We are now ordering your number. Please wait a moment..."
-)
-
-PAYMENT_FAILED = "❌ <b>Payment Failed or Canceled.</b>\n\nPlease try again or select a different option."
+PAYMENT_SUCCESSFUL = "🎉 <b>Payment Successful!</b>\n\nWe are now ordering your number..."
+PAYMENT_FAILED = "❌ <b>Payment Failed or Canceled.</b>"
 
 # --- Number & SMS Handling ---
 def number_issued_message(number: str, expiry_time: str) -> str:
@@ -62,8 +66,8 @@ def number_issued_message(number: str, expiry_time: str) -> str:
     return (
         f"✅ Your number is ready!\n\n"
         f"📞 <b>Number:</b> <code>{number}</code>\n"
-        f"⏳ <b>Expires:</b> in {expiry_time}\n\n"
-        "I will automatically listen for incoming SMS and forward them to you here."
+        f"⏳ <b>Expires:</b> {expiry_time}\n\n"
+        "I will automatically listen for incoming SMS."
     )
 
 def new_sms_message(sms_code: str, full_text: str) -> str:
@@ -74,16 +78,15 @@ def new_sms_message(sms_code: str, full_text: str) -> str:
         f"<b>Full Text:</b>\n<pre>{full_text}</pre>"
     )
 
-NUMBER_EXPIRED = "⌛️ Your temporary number has expired. Please purchase a new one if needed."
+NUMBER_EXPIRED = "⌛️ Your temporary number has expired."
 NO_SMS_YET = "No SMS received yet. Still listening..."
 
 # --- Error and System Messages ---
-GENERIC_ERROR = "⚠️ An unexpected error occurred. Please try again later or contact support."
-PRICE_EXPIRED = "⚠️ The price for this service has expired. Please start over to get a new price."
-SERVICE_UNAVAILABLE = "Sorry, this service is currently unavailable. Please try again later."
+GENERIC_ERROR = "⚠️ An unexpected error occurred. Please try again."
+SERVICE_UNAVAILABLE = "Sorry, this service is not available for the selected country."
 INVALID_SELECTION = "Invalid selection. Please use the buttons provided."
 
 # --- Search Prompts ---
-SEARCH_COUNTRY_PROMPT = "🔍 <b>Search Country</b>\n\nPlease type the name of the country you are looking for:"
-SEARCH_SERVICE_PROMPT = "🔍 <b>Search Service</b>\n\nPlease type the name of the service you are looking for:"
-NO_RESULTS = "❌ No matching results found. Showing all options again:"
+SEARCH_COUNTRY_PROMPT = "🔍 <b>Search Country</b>\n\nPlease type the name of the country:"
+SEARCH_SERVICE_PROMPT = "🔍 <b>Search Service</b>\n\nPlease type the name of the service:"
+NO_RESULTS = "❌ No matching results found."
