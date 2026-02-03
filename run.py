@@ -1,5 +1,6 @@
 import asyncio
 import sys
+from aiohttp import web
 
 from aiogram.types import BotCommand
 
@@ -7,12 +8,36 @@ from utils.logger import app_logger
 from bot.main import bot, dp
 from database.connection import init_db, async_session_factory
 from workers.sms_worker import sms_polling_worker
+from workers.payment_worker import process_webhook_event
+
+# --- Webhook Handler ---
+async def paystack_webhook_handler(request: web.Request):
+    """
+    Handles incoming webhooks from Paystack.
+    """
+    try:
+        payload = await request.json()
+        app_logger.info(f"Received Paystack webhook: {payload.get('event')}")
+
+        # You should add signature verification here for production security
+        # For now, we process it directly.
+        
+        async with async_session_factory() as session:
+            success = await process_webhook_event(session, payload)
+        
+        if success:
+            return web.Response(status=200) # Tell Paystack we received it
+        else:
+            # If processing fails, tell Paystack something is wrong
+            return web.Response(status=400)
+
+    except Exception as e:
+        app_logger.error(f"Error processing Paystack webhook: {e}", exc_info=True)
+        return web.Response(status=500)
 
 
 async def set_bot_commands():
-    """
-    Sets the bot's command menu that users see when they type '/'
-    """
+    """Sets the bot's command menu."""
     commands = [
         BotCommand(command="start", description="Start the bot"),
         BotCommand(command="help", description="Get help"),
@@ -21,60 +46,52 @@ async def set_bot_commands():
     app_logger.info("Bot commands set successfully.")
 
 
+async def start_bot_polling():
+    """Starts the bot's polling loop."""
+    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+
 async def main():
-    """The main function that configures and starts the application."""
-    
+    """Configures and runs all application components."""
     app_logger.info("Application starting up...")
 
+    # Initialize bot and database
     try:
-        bot_info = await bot.get_me()
-        app_logger.info(f"Bot successfully initialized: {bot_info.full_name} [@{bot_info.username}]")
-    except Exception as e:
-        app_logger.critical(f"Failed to initialize bot: {e}. Check BOT_TOKEN.", exc_info=True)
-        sys.exit(1)
-
-    # Set bot commands
-    try:
+        await bot.get_me()
         await set_bot_commands()
-    except Exception as e:
-        app_logger.warning(f"Failed to set bot commands: {e}")
-
-    # Initialize the database
-    try:
-        app_logger.info("Initializing database...")
         await init_db()
-        app_logger.info("Database initialized successfully.")
+        app_logger.info("Bot, commands, and database initialized successfully.")
     except Exception as e:
-        app_logger.critical(f"Failed to initialize database: {e}", exc_info=True)
+        app_logger.critical(f"Initialization failed: {e}", exc_info=True)
         sys.exit(1)
-    
-    # Start the background SMS polling worker
-    app_logger.info("Starting background SMS worker...")
-    sms_worker_task = asyncio.create_task(
-        sms_polling_worker(bot, async_session_factory)
-    )
 
-    # Start polling for Telegram updates
+    # --- Start Web Server for Webhooks ---
+    app = web.Application()
+    app.router.add_post("/webhook/paystack", paystack_webhook_handler)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    # Run on localhost and port 8443
+    site = web.TCPSite(runner, '0.0.0.0', 8443) # <-- PORT CHANGED HERE
+    await site.start()
+    app_logger.info("Webhook server started on port 8443.") # <-- LOG MESSAGE UPDATED
+
+    # --- Start Background Workers ---
+    sms_worker_task = asyncio.create_task(sms_polling_worker(bot, async_session_factory))
+    
+    # --- Start Bot Polling ---
     try:
         app_logger.info("Starting bot polling...")
-        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+        await start_bot_polling()
     finally:
-        app_logger.warning("Bot polling stopped. Shutting down...")
+        app_logger.warning("Shutdown sequence initiated...")
         sms_worker_task.cancel()
-        try:
-            await sms_worker_task
-        except asyncio.CancelledError:
-            app_logger.info("SMS worker task cancelled successfully.")
-        
+        await runner.cleanup()
         await bot.session.close()
-        app_logger.info("Bot session closed. Shutdown complete.")
+        app_logger.info("Shutdown complete.")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        app_logger.warning("Application was stopped manually.")
-    except Exception as e:
-        app_logger.critical(f"A critical error caused the application to stop: {e}", exc_info=True)
-        sys.exit(1)
+        app_logger.warning("Application stopped manually.")
