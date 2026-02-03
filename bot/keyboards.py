@@ -6,6 +6,7 @@ CB_PREFIX_COUNTRY = "country:"
 CB_PREFIX_SERVICE = "service:"
 CB_PREFIX_NUMBER_TYPE = "numtype:"
 CB_PREFIX_PAY = "pay:"
+CB_PREFIX_CANCEL = "cancel:"  # <--- This is the one that was missing
 CB_BACK = "back:"
 
 # --- Main Menu & General Keyboards ---
@@ -38,14 +39,13 @@ def paginated_list_keyboard(items: list, prefix: str, page: int, total_pages: in
     builder.adjust(2)
     
     # Pagination controls
-    # The key fix: use the prefix WITHOUT the colon in the page callback
     nav_buttons = []
+    # Strip the colon from prefix for the page callback data
+    clean_prefix = prefix.rstrip(':')
+    
     if page > 1:
-        # For "country:" prefix, strip the colon to get "country"
-        clean_prefix = prefix.rstrip(':')
         nav_buttons.append(InlineKeyboardButton(text="« Prev", callback_data=f"page:{clean_prefix}:{page-1}"))
     if page < total_pages:
-        clean_prefix = prefix.rstrip(':')
         nav_buttons.append(InlineKeyboardButton(text="Next »", callback_data=f"page:{clean_prefix}:{page+1}"))
     
     if nav_buttons:
@@ -62,7 +62,6 @@ def number_type_keyboard() -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="⬅️ Back to Main Menu", callback_data=f"{CB_BACK}main_menu"))
     return builder.as_markup()
 
-# --- Payment Keyboards ---
 def payment_keyboard(price_ref: str) -> InlineKeyboardMarkup:
     """Creates the 'Pay Now' keyboard with a Back button."""
     builder = InlineKeyboardBuilder()
