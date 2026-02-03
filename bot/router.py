@@ -1,3 +1,4 @@
+import math
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, User
 from aiogram.filters import CommandStart
@@ -14,6 +15,7 @@ from services.pva_service import pva_service
 from workers import pricing_worker, payment_worker
 
 main_router = Router()
+ITEMS_PER_PAGE = 10 # Items per page for paginated lists
 
 class OrderState(StatesGroup):
     choosing_type = State()
@@ -48,7 +50,6 @@ async def cq_order_number(callback: CallbackQuery, state: FSMContext):
 
 @main_router.callback_query(F.data == "my_numbers")
 async def cq_my_numbers(callback: CallbackQuery, session):
-    # ... (code is correct and remains the same)
     await callback.answer()
     user_data = await get_or_create_user(session, callback.from_user)
     query = select(Number).where(Number.user_id == user_data.id, Number.status == "active").order_by(Number.created_at.desc())
@@ -64,12 +65,11 @@ async def cq_my_numbers(callback: CallbackQuery, session):
 
 @main_router.callback_query(F.data == "support")
 async def cq_support(callback: CallbackQuery):
-    # ... (code is correct and remains the same)
     await callback.answer()
     support_text = "🆘 <b>Help & Support</b>\n\n📧 <b>Email:</b>\n• info@numrow.com\n• gidatechnologies@gmail.com"
     await callback.message.edit_text(support_text, reply_markup=kb.main_menu_keyboard())
 
-# --- UNIVERSAL BACK BUTTON HANDLER ---
+# --- UNIVERSAL BACK & PAGINATION ---
 @main_router.callback_query(F.data.startswith(kb.CB_BACK))
 async def cq_back_handler(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -78,36 +78,62 @@ async def cq_back_handler(callback: CallbackQuery, state: FSMContext):
     if action == "main_menu":
         await state.clear()
         await callback.message.edit_text(msg.welcome_message(callback.from_user.full_name), reply_markup=kb.main_menu_keyboard())
-    
     elif action == "type_select":
-        await cq_order_number(callback, state) # Go back to rent/temp choice
-    
+        await cq_order_number(callback, state)
     elif action == "country_select":
-        data = await state.get_data()
-        is_rent = data.get('is_rent', False)
-        countries = await pva_service.get_countries(is_rent=is_rent)
-        await callback.message.edit_text(msg.SELECT_COUNTRY, reply_markup=kb.country_selection_keyboard(countries))
+        await callback.message.edit_text(
+            msg.SELECT_COUNTRY,
+            reply_markup=kb.initial_selection_keyboard("list_countries:1", "start_search_country", f"{kb.CB_BACK}type_select")
+        )
         await state.set_state(OrderState.choosing_country)
-        
     elif action == "service_select":
-        data = await state.get_data()
-        country_id = data.get('country_id')
-        is_rent = data.get('is_rent', False)
-        services = await pva_service.get_services(country_id, is_rent=is_rent)
-        await callback.message.edit_text(msg.SELECT_SERVICE, reply_markup=kb.service_selection_keyboard(services))
+        await callback.message.edit_text(
+            msg.SELECT_SERVICE,
+            reply_markup=kb.initial_selection_keyboard("list_services:1", "start_search_service", f"{kb.CB_BACK}country_select")
+        )
         await state.set_state(OrderState.choosing_service)
 
-# --- FULL ORDER FLOW WITH SEARCH AND BACK ---
+@main_router.callback_query(F.data.startswith("page:"))
+async def cq_page_handler(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    _, prefix, page_str = callback.data.split(':', 2)
+    page = int(page_str)
+    
+    if prefix == kb.CB_PREFIX_COUNTRY:
+        await cq_list_countries(callback, state, page=page)
+    elif prefix == kb.CB_PREFIX_SERVICE:
+        await cq_list_services(callback, state, page=page)
 
+# --- FULL ORDER FLOW ---
 @main_router.callback_query(OrderState.choosing_type, F.data.startswith(kb.CB_PREFIX_NUMBER_TYPE))
 async def cq_type_selected(callback: CallbackQuery, state: FSMContext):
     is_rent = callback.data.split(':')[1] == 'rent'
     await state.update_data(is_rent=is_rent)
-    countries = await pva_service.get_countries(is_rent=is_rent)
-    await callback.message.edit_text(msg.SELECT_COUNTRY, reply_markup=kb.country_selection_keyboard(countries))
+    await callback.message.edit_text(
+        msg.SELECT_COUNTRY,
+        reply_markup=kb.initial_selection_keyboard("list_countries:1", "start_search_country", f"{kb.CB_BACK}type_select")
+    )
     await state.set_state(OrderState.choosing_country)
 
-# Country Search
+# --- COUNTRY FLOW ---
+@main_router.callback_query(OrderState.choosing_country, F.data.startswith("list_countries:"))
+async def cq_list_countries(callback: CallbackQuery, state: FSMContext, page: int = 1):
+    if isinstance(callback.data, str) and callback.data.count(':') > 0:
+        page = int(callback.data.split(':')[1])
+    
+    data = await state.get_data()
+    all_countries = await pva_service.get_countries(is_rent=data.get('is_rent', False))
+    
+    start_index = (page - 1) * ITEMS_PER_PAGE
+    end_index = start_index + ITEMS_PER_PAGE
+    paginated_countries = all_countries[start_index:end_index]
+    total_pages = math.ceil(len(all_countries) / ITEMS_PER_PAGE)
+    
+    await callback.message.edit_text(
+        f"Select a country (Page {page}/{total_pages}):",
+        reply_markup=kb.paginated_list_keyboard(paginated_countries, kb.CB_PREFIX_COUNTRY, page, total_pages, f"{kb.CB_BACK}type_select")
+    )
+
 @main_router.callback_query(OrderState.choosing_country, F.data == "start_search_country")
 async def cq_start_search_country(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -120,9 +146,10 @@ async def process_country_search(message: Message, state: FSMContext):
     data = await state.get_data()
     all_countries = await pva_service.get_countries(is_rent=data.get('is_rent', False))
     filtered = [c for c in all_countries if search_query in c['name'].lower()]
-    reply_markup = kb.country_selection_keyboard(filtered if filtered else all_countries)
-    reply_text = f"Found {len(filtered)} results for '{message.text}':" if filtered else msg.NO_RESULTS
-    await message.answer(reply_text, reply_markup=reply_markup)
+    await message.answer(
+        f"Found {len(filtered)} results:" if filtered else msg.NO_RESULTS,
+        reply_markup=kb.paginated_list_keyboard(filtered, kb.CB_PREFIX_COUNTRY, 1, 1, f"{kb.CB_BACK}type_select")
+    )
     await state.set_state(OrderState.choosing_country)
 
 @main_router.callback_query(OrderState.choosing_country, F.data.startswith(kb.CB_PREFIX_COUNTRY))
@@ -130,16 +157,36 @@ async def cq_country_selected(callback: CallbackQuery, state: FSMContext):
     country_id = callback.data.split(':')[1]
     data = await state.get_data()
     is_rent = data.get('is_rent', False)
-    all_countries = await pva_service.get_countries(is_rent=is_rent)
+    all_countries = await pva_service.get_countries(is_rent)
     country_name = next((c['name'] for c in all_countries if c['id'] == country_id), None)
     if not country_name: return
 
     await state.update_data(country_id=country_id, country_name=country_name)
-    services = await pva_service.get_services(country_id, is_rent=is_rent)
-    await callback.message.edit_text(msg.SELECT_SERVICE, reply_markup=kb.service_selection_keyboard(services))
+    await callback.message.edit_text(
+        msg.SELECT_SERVICE,
+        reply_markup=kb.initial_selection_keyboard("list_services:1", "start_search_service", f"{kb.CB_BACK}country_select")
+    )
     await state.set_state(OrderState.choosing_service)
 
-# Service Search
+# --- SERVICE FLOW ---
+@main_router.callback_query(OrderState.choosing_service, F.data.startswith("list_services:"))
+async def cq_list_services(callback: CallbackQuery, state: FSMContext, page: int = 1):
+    if isinstance(callback.data, str) and callback.data.count(':') > 0:
+        page = int(callback.data.split(':')[1])
+    
+    data = await state.get_data()
+    all_services = await pva_service.get_services(data.get('country_id'), is_rent=data.get('is_rent', False))
+    
+    start_index = (page - 1) * ITEMS_PER_PAGE
+    end_index = start_index + ITEMS_PER_PAGE
+    paginated_services = all_services[start_index:end_index]
+    total_pages = math.ceil(len(all_services) / ITEMS_PER_PAGE)
+    
+    await callback.message.edit_text(
+        f"Select a service (Page {page}/{total_pages}):",
+        reply_markup=kb.paginated_list_keyboard(paginated_services, kb.CB_PREFIX_SERVICE, page, total_pages, f"{kb.CB_BACK}country_select")
+    )
+
 @main_router.callback_query(OrderState.choosing_service, F.data == "start_search_service")
 async def cq_start_search_service(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -152,9 +199,10 @@ async def process_service_search(message: Message, state: FSMContext):
     data = await state.get_data()
     all_services = await pva_service.get_services(data.get('country_id'), is_rent=data.get('is_rent', False))
     filtered = [s for s in all_services if search_query in s['name'].lower()]
-    reply_markup = kb.service_selection_keyboard(filtered if filtered else all_services)
-    reply_text = f"Found {len(filtered)} results for '{message.text}':" if filtered else msg.NO_RESULTS
-    await message.answer(reply_text, reply_markup=reply_markup)
+    await message.answer(
+        f"Found {len(filtered)} results:" if filtered else msg.NO_RESULTS,
+        reply_markup=kb.paginated_list_keyboard(filtered, kb.CB_PREFIX_SERVICE, 1, 1, f"{kb.CB_BACK}country_select")
+    )
     await state.set_state(OrderState.choosing_service)
 
 @main_router.callback_query(OrderState.choosing_service, F.data.startswith(kb.CB_PREFIX_SERVICE))
