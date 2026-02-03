@@ -72,7 +72,7 @@ async def cq_support(callback: CallbackQuery):
     support_text = "🆘 <b>Help & Support</b>\n\n📧 <b>Email:</b>\n• info@numrow.com\n• gidatechnologies@gmail.com"
     await callback.message.edit_text(support_text, reply_markup=kb.main_menu_keyboard())
 
-# --- UNIVERSAL BACK, PAGINATION, AND REFRESH ---
+# --- UNIVERSAL BACK, LOAD MORE, AND REFRESH ---
 @main_router.callback_query(F.data.startswith(kb.CB_BACK))
 async def cq_back_handler(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -99,7 +99,6 @@ async def cq_load_more_handler(callback: CallbackQuery, state: FSMContext):
 
     _, prefix, offset_str = parts
     offset = int(offset_str)
-
     current_state = await state.get_state()
     
     if prefix == "country" and current_state == OrderState.choosing_country:
@@ -113,26 +112,21 @@ async def cq_refresh_sms(callback: CallbackQuery, session):
     try:
         number_db_id = int(callback.data.split(':')[1])
     except (ValueError, IndexError):
-        await callback.answer("Invalid button data.", show_alert=True)
-        return
+        return await callback.answer("Invalid button data.", show_alert=True)
 
     await callback.answer("Checking for new SMS...", show_alert=False)
-
     number_obj = await session.get(Number, number_db_id, options=[selectinload(Number.user)])
     if not number_obj or number_obj.user.telegram_id != callback.from_user.id:
-        await callback.answer("This is not your number.", show_alert=True)
-        return
+        return await callback.answer("This is not your number.", show_alert=True)
 
-    is_rent = False # Assume temp for now, needs logic to check if it's a rental
-    
+    is_rent = False # Placeholder: Need a way to know if this number is a rental
     countries = await pva_service.get_countries(is_rent=is_rent)
     country_name = next((c['name'] for c in countries if c['id'] == number_obj.country_code), None)
     
     if not country_name:
-        await callback.answer("Error: Country not found for this number.", show_alert=True)
-        return
+        return await callback.answer("Error: Country info not found for this number.", show_alert=True)
 
-    # Triggering the API call is enough. The background worker will pick up the result.
+    # Triggering the API call is enough. The background worker will pick up any new SMS.
     await pva_service.get_sms(
         phone_number=number_obj.phone_number,
         service_id=number_obj.service_code,
@@ -181,7 +175,11 @@ async def process_country_search(message: Message, state: FSMContext):
     data = await state.get_data()
     all_countries = await pva_service.get_countries(is_rent=data.get('is_rent', False))
     filtered = [c for c in all_countries if search_query in c['name'].lower()]
-    await message.answer(f"Found {len(filtered)} results:" if filtered else msg.NO_RESULTS, reply_markup=kb.load_more_list_keyboard(filtered, kb.CB_PREFIX_COUNTRY, 0, len(filtered), f"{kb.CB_BACK}type_select"))
+    await message.answer(
+        f"Found {len(filtered)} results:" if filtered else msg.NO_RESULTS,
+        reply_markup=kb.load_more_list_keyboard(filtered, kb.CB_PREFIX_COUNTRY, 0, len(filtered), f"{kb.CB_BACK}type_select")
+    )
+    await state.set_state(OrderState.choosing_country)
 
 @main_router.callback_query(OrderState.choosing_country, F.data.startswith(kb.CB_PREFIX_COUNTRY))
 async def cq_country_selected(callback: CallbackQuery, state: FSMContext):
@@ -226,6 +224,7 @@ async def process_service_search(message: Message, state: FSMContext):
     all_services = await pva_service.get_services(data.get('country_id'), is_rent=data.get('is_rent', False))
     filtered = [s for s in all_services if search_query in s['name'].lower()]
     await message.answer(f"Found {len(filtered)} results:" if filtered else msg.NO_RESULTS, reply_markup=kb.load_more_list_keyboard(filtered, kb.CB_PREFIX_SERVICE, 0, len(filtered), f"{kb.CB_BACK}country_select"))
+    await state.set_state(OrderState.choosing_service)
 
 @main_router.callback_query(OrderState.choosing_service, F.data.startswith(kb.CB_PREFIX_SERVICE))
 async def cq_service_selected(callback: CallbackQuery, state: FSMContext):
@@ -241,9 +240,13 @@ async def process_price_request(callback: CallbackQuery, state: FSMContext):
         is_rent=selections.get('is_rent')
     )
     if not price:
-        await callback.message.edit_text(msg.SERVICE_UNAVAILABLE, reply_markup=kb.main_menu_keyboard())
-        await state.clear()
+        await callback.answer("This service is currently unavailable.", show_alert=True)
+        country_id = selections.get('country_id')
+        is_rent = selections.get('is_rent', False)
+        await callback.message.edit_text(f"{msg.SERVICE_UNAVAILABLE}\n\nPlease choose a different service:", reply_markup=kb.initial_selection_keyboard("list_services:", "start_search_service", f"{kb.CB_BACK}country_select"))
+        await state.set_state(OrderState.choosing_service)
         return
+        
     await callback.message.edit_text(msg.final_price_message(price, duration), reply_markup=kb.payment_keyboard(price_ref))
     await state.set_state(OrderState.confirming_price)
 
@@ -257,7 +260,8 @@ async def cq_pay_now(callback: CallbackQuery, state: FSMContext, session):
         country_id=selections.get('country_id'), service_id=selections.get('service_id'),
         is_rent=selections.get('is_rent')
     )
-    if not price: return await callback.message.answer(msg.SERVICE_UNAVAILABLE)
+    if not price: return await callback.answer("Sorry, the price for this service just became unavailable.", show_alert=True)
+    
     payment_url = await payment_worker.create_payment_link(session, user_data.id, price, price_ref)
     if payment_url:
         await callback.message.edit_text(msg.payment_link_message(payment_url), reply_markup=kb.payment_link_keyboard(payment_url))
