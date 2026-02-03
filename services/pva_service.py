@@ -19,7 +19,6 @@ class PvaService:
         url = f"{PVA_PINS_BASE_URL}{endpoint}"
         try:
             async with aiohttp.ClientSession() as session:
-                # Add the API key to every request that needs it
                 if params and "customer" in params:
                     params['customer'] = self.api_key
                     
@@ -100,35 +99,34 @@ class PvaService:
         params = {'customer': self.api_key, 'app': service_full_name, 'country': country_name}
         endpoint = "rent.php" if is_rent else "get_number.php"
         
-        # Use a more generic request that can handle both JSON and Text
         url = f"{PVA_PINS_BASE_URL}{endpoint}"
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, params=params, timeout=30) as response:
                     response.raise_for_status()
                     raw_response_text = await response.text()
-                    app_logger.info(f"RAW RESPONSE from {endpoint}: {raw_response_text}")
+                    app_logger.info(f"RAW RESPONSE from {endpoint}: '{raw_response_text}'")
 
-                    # Intelligently parse the response
+                    # Ultra-robust parsing logic
                     try:
-                        # Try to parse as JSON (for rental responses)
                         data = json.loads(raw_response_text)
                         if is_rent and data.get('code') == 100:
-                            phone_number = data['data']
-                            return {"activation_id": phone_number, "phone_number": phone_number}
-                        
+                            phone_number = data.get('data', '')
+                            sanitized_number = re.sub(r'[^\d+]', '', phone_number)
+                            if sanitized_number:
+                                return {"activation_id": sanitized_number, "phone_number": sanitized_number}
                     except json.JSONDecodeError:
-                        # If not JSON, treat as plain text (for temporary numbers)
-                        # Check if it looks like a phone number
-                        match = re.search(r'\+?\d{10,}', raw_response_text)
+                        cleaned_text = raw_response_text.strip()
+                        match = re.search(r'\+?\d{10,}', cleaned_text)
                         if match:
                             phone_number = match.group(0)
+                            app_logger.info(f"Successfully parsed phone number via regex: {phone_number}")
                             return {"activation_id": phone_number, "phone_number": phone_number}
 
         except Exception as e:
             app_logger.error(f"Error during buy_number request: {e}")
 
-        # If all parsing attempts fail, return None
+        # If all parsing fails, return None
         return None
 
     async def get_sms(self, phone_number: str, service_id: str, country_id: str, country_name: str, is_rent: bool = False) -> Optional[dict]:
@@ -141,13 +139,12 @@ class PvaService:
         params = {'customer': self.api_key, 'number': phone_number, 'app': service_full_name, 'country': country_name}
         endpoint = "load_rent_code.php" if is_rent else "get_sms.php"
         
-        if not is_rent: # Temporary number SMS check (expects text)
+        if not is_rent:
             response_text = await self._make_request(endpoint, params, expect_json=False)
             if not response_text or "you have not received any code yet" in response_text.lower():
                 return {"status": "WAITING"}
             return {"status": "OK", "code": response_text}
 
-        # Rental SMS check (expects JSON)
         response_json = await self._make_request(endpoint, params, expect_json=True)
         if response_json and isinstance(response_json, list) and len(response_json) > 0:
             return {"status": "OK", "code": response_json[0]['message']}
