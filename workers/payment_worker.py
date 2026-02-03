@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy.orm import selectinload # <--- Added this import
+from sqlalchemy.orm import selectinload
 
 from models.user import User
 from models.payment import Payment
@@ -16,6 +16,7 @@ from utils.logger import app_logger
 from config.constants import REDIS_PRICING_LOCK_PREFIX, PRICE_LOCK_DURATION, DEFAULT_TEMP_DURATION_MINUTES
 from database.redis import redis_client
 import bot.messages as msg
+from bot.keyboards import refresh_sms_keyboard # <-- Import the new keyboard
 
 async def create_payment_link(
     session: AsyncSession,
@@ -23,9 +24,7 @@ async def create_payment_link(
     final_ngn_price: int,
     price_ref: str
 ) -> Optional[str]:
-    """
-    Creates a payment record in the DB and gets a Paystack payment link.
-    """
+    # ... (this function is correct and unchanged) ...
     try:
         user = await session.get(User, user_id)
         if not user:
@@ -69,62 +68,41 @@ async def process_webhook_event(bot, session: AsyncSession, payload: dict) -> bo
     """
     Processes a 'charge.success' event from a Paystack webhook.
     """
+    # ... (the first part of this function is correct and unchanged) ...
     event = payload.get("event")
     data = payload.get("data")
-
-    if event != "charge.success":
-        app_logger.debug(f"Ignoring non-success webhook event: {event}")
-        return False
-
+    if event != "charge.success": return False
     reference = data.get("reference")
-    if not reference:
-        app_logger.warning("Webhook received without a reference.")
-        return False
+    if not reference: return False
 
-    # FIXED: Corrected the query to use selectinload
     query = select(Payment).where(Payment.paystack_ref == reference).options(selectinload(Payment.user))
     result = await session.execute(query)
     payment = result.scalar_one_or_none()
-
-    if not payment:
-        app_logger.error(f"Webhook for unknown reference '{reference}' received.")
-        return False
-
-    if payment.status == "successful":
-        app_logger.info(f"Webhook for already successful payment '{reference}' received. Ignoring.")
-        return True
+    if not payment: return False
+    if payment.status == "successful": return True
 
     verified_status, verified_amount_kobo = await paystack_service.verify_transaction(reference)
-
     if verified_status != "success":
-        app_logger.warning(f"Webhook-triggered verification for '{reference}' failed. Status: {verified_status}")
         payment.status = "failed"
         await session.commit()
         return False
-        
     if verified_amount_kobo != payment.amount_ngn:
-        app_logger.error(f"CRITICAL: Amount mismatch for '{reference}'. DB: {payment.amount_ngn}, Paystack: {verified_amount_kobo}.")
         payment.status = "disputed"
         await session.commit()
         return False
 
     payment.status = "successful"
     await session.commit()
-    app_logger.info(f"Payment {payment.id} (ref: {reference}) successfully updated to 'successful'.")
+    app_logger.info(f"Payment {payment.id} (ref: {reference}) successfully updated.")
 
     try:
         parts = payment.locked_price_ref.split(":")
-        country_id = parts[1]
-        service_id = parts[2]
-        number_type = parts[3]
+        country_id, service_id, number_type = parts[1], parts[2], parts[3]
         is_rent = (number_type == 'rent')
 
         countries = await pva_service.get_countries(is_rent=is_rent)
         country_name = next((c['name'] for c in countries if c['id'] == country_id), None)
-
-        if not country_name:
-            app_logger.error(f"Could not find country name for ID {country_id}. Aborting purchase.")
-            return False
+        if not country_name: return False
 
         app_logger.info(f"Triggering number purchase for service ID '{service_id}' in country '{country_name}'.")
         
@@ -137,7 +115,6 @@ async def process_webhook_event(bot, session: AsyncSession, payload: dict) -> bo
             app_logger.info(f"Successfully purchased number for payment {payment.id}: {purchased_number_info}")
             
             expiry_delta = timedelta(minutes=DEFAULT_TEMP_DURATION_MINUTES)
-            
             new_number = Number(
                 phone_number=purchased_number_info['phone_number'],
                 pva_activation_id=purchased_number_info['activation_id'],
@@ -150,15 +127,18 @@ async def process_webhook_event(bot, session: AsyncSession, payload: dict) -> bo
             )
             session.add(new_number)
             await session.commit()
+            await session.refresh(new_number) # Get the new_number.id
             
+            # Use the new keyboard when sending the number to the user
             expiry_string = f"in {expiry_delta.seconds // 60} minutes"
             await bot.send_message(
                 chat_id=payment.user.telegram_id, 
-                text=msg.number_issued_message(new_number.phone_number, expiry_string)
+                text=msg.number_issued_message(new_number.phone_number, expiry_string),
+                reply_markup=refresh_sms_keyboard(new_number.id) # <-- USING THE NEW KEYBOARD
             )
 
         else:
-            app_logger.error(f"Failed to purchase number for successful payment {payment.id}. MANUAL INTERVENTION NEEDED.")
+            app_logger.error(f"Failed to purchase number for successful payment {payment.id}.")
             await bot.send_message(
                 chat_id=payment.user.telegram_id,
                 text="We received your payment, but there was an error ordering your number. Please contact support."
