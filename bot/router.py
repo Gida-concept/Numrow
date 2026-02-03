@@ -1,5 +1,5 @@
 import math
-import aiogram.exceptions # <--- Added for exception handling
+import aiogram.exceptions
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, User
 from aiogram.filters import CommandStart
@@ -17,6 +17,7 @@ from workers import pricing_worker, payment_worker
 
 main_router = Router()
 ITEMS_PER_PAGE = 10
+LOAD_MORE_COUNT = 10 # Number of items to load each time
 
 class OrderState(StatesGroup):
     choosing_type = State()
@@ -70,7 +71,7 @@ async def cq_support(callback: CallbackQuery):
     support_text = "🆘 <b>Help & Support</b>\n\n📧 <b>Email:</b>\n• info@numrow.com\n• gidatechnologies@gmail.com"
     await callback.message.edit_text(support_text, reply_markup=kb.main_menu_keyboard())
 
-# --- UNIVERSAL BACK & PAGINATION ---
+# --- UNIVERSAL BACK ---
 @main_router.callback_query(F.data.startswith(kb.CB_BACK))
 async def cq_back_handler(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -82,25 +83,29 @@ async def cq_back_handler(callback: CallbackQuery, state: FSMContext):
     elif action == "type_select":
         await cq_order_number(callback, state)
     elif action == "country_select":
-        await callback.message.edit_text(msg.SELECT_COUNTRY, reply_markup=kb.initial_selection_keyboard("list_countries:1", "start_search_country", f"{kb.CB_BACK}type_select"))
+        await callback.message.edit_text(msg.SELECT_COUNTRY, reply_markup=kb.initial_selection_keyboard("list_countries:", "start_search_country", f"{kb.CB_BACK}type_select"))
         await state.set_state(OrderState.choosing_country)
     elif action == "service_select":
-        await callback.message.edit_text(msg.SELECT_SERVICE, reply_markup=kb.initial_selection_keyboard("list_services:1", "start_search_service", f"{kb.CB_BACK}country_select"))
+        await callback.message.edit_text(msg.SELECT_SERVICE, reply_markup=kb.initial_selection_keyboard("list_services:", "start_search_service", f"{kb.CB_BACK}country_select"))
         await state.set_state(OrderState.choosing_service)
 
-@main_router.callback_query(F.data.startswith("page:"))
-async def cq_page_handler(callback: CallbackQuery, state: FSMContext):
+# --- LOAD MORE HANDLER ---
+@main_router.callback_query(F.data.startswith("load_more:"))
+async def cq_load_more_handler(callback: CallbackQuery, state: FSMContext):
+    """Handles the 'Load More' button for countries and services."""
     await callback.answer()
     parts = callback.data.split(':', 2)
     if len(parts) != 3: return
+
+    _, prefix, offset_str = parts
+    offset = int(offset_str)
+
+    current_state = await state.get_state()
     
-    _, prefix, page_str = parts
-    page = int(page_str)
-    
-    if prefix == kb.CB_PREFIX_COUNTRY.rstrip(':'):
-        await cq_list_countries(callback, state, page=page)
-    elif prefix == kb.CB_PREFIX_SERVICE.rstrip(':'):
-        await cq_list_services(callback, state, page=page)
+    if prefix == "country" and current_state == OrderState.choosing_country:
+        await cq_show_countries(callback, state, offset=offset)
+    elif prefix == "service" and current_state == OrderState.choosing_service:
+        await cq_show_services(callback, state, offset=offset)
 
 # --- FULL ORDER FLOW ---
 @main_router.callback_query(OrderState.choosing_type, F.data.startswith(kb.CB_PREFIX_NUMBER_TYPE))
@@ -109,38 +114,39 @@ async def cq_type_selected(callback: CallbackQuery, state: FSMContext):
     await state.update_data(is_rent=is_rent)
     await callback.message.edit_text(
         msg.SELECT_COUNTRY,
-        reply_markup=kb.initial_selection_keyboard("list_countries:1", "start_search_country", f"{kb.CB_BACK}type_select")
+        reply_markup=kb.initial_selection_keyboard("list_countries:", "start_search_country", f"{kb.CB_BACK}type_select")
     )
     await state.set_state(OrderState.choosing_country)
 
-# --- COUNTRY FLOW ---
-@main_router.callback_query(OrderState.choosing_country, F.data.startswith("list_countries:"))
-async def cq_list_countries(callback: CallbackQuery, state: FSMContext, page: int = 1):
-    if isinstance(callback.data, str) and callback.data.count(':'):
-        try: page = int(callback.data.split(':')[1])
-        except (ValueError, IndexError): page = 1
-    
+# --- COUNTRY FLOW (with Load More) ---
+async def cq_show_countries(callback: CallbackQuery, state: FSMContext, offset: int = 0):
+    """Shows a list of countries with a 'Load More' button."""
     data = await state.get_data()
     all_countries = await pva_service.get_countries(is_rent=data.get('is_rent', False))
     
-    start_index = (page - 1) * ITEMS_PER_PAGE
-    paginated_countries = all_countries[start_index : start_index + ITEMS_PER_PAGE]
-    total_pages = math.ceil(len(all_countries) / ITEMS_PER_PAGE)
+    paginated_countries = all_countries[offset : offset + LOAD_MORE_COUNT]
     
-    new_text = f"Select a country (Page {page}/{total_pages}):"
-    new_markup = kb.paginated_list_keyboard(paginated_countries, kb.CB_PREFIX_COUNTRY, page, total_pages, f"{kb.CB_BACK}type_select")
-
-    # Attempt to edit the message. If it's the same, Telegram will complain.
-    # We catch that specific error and handle it gracefully.
+    reply_markup = kb.load_more_list_keyboard(
+        items=paginated_countries,
+        prefix=kb.CB_PREFIX_COUNTRY,
+        offset=offset,
+        total_count=len(all_countries),
+        back_callback=f"{kb.CB_BACK}type_select"
+    )
+    
     try:
-        await callback.message.edit_text(new_text, reply_markup=new_markup)
+        await callback.message.edit_text("Select a country:", reply_markup=reply_markup)
     except aiogram.exceptions.TelegramBadRequest as e:
         if "message is not modified" in e.message:
-            # If the message is identical, just acknowledge the callback to stop the loading spinner
             await callback.answer()
         else:
-            # If it's a different kind of BadRequest, re-raise it
             raise
+
+@main_router.callback_query(OrderState.choosing_country, F.data.startswith("list_countries:"))
+async def cq_list_countries(callback: CallbackQuery, state: FSMContext):
+    """Initial call to show the first batch of countries."""
+    await callback.answer()
+    await cq_show_countries(callback, state, offset=0)
 
 @main_router.callback_query(OrderState.choosing_country, F.data == "start_search_country")
 async def cq_start_search_country(callback: CallbackQuery, state: FSMContext):
@@ -154,9 +160,10 @@ async def process_country_search(message: Message, state: FSMContext):
     data = await state.get_data()
     all_countries = await pva_service.get_countries(is_rent=data.get('is_rent', False))
     filtered = [c for c in all_countries if search_query in c['name'].lower()]
+    # For search results, we can show all at once or paginate. Let's show all for simplicity.
     await message.answer(
         f"Found {len(filtered)} results:" if filtered else msg.NO_RESULTS,
-        reply_markup=kb.paginated_list_keyboard(filtered, kb.CB_PREFIX_COUNTRY, 1, 1, f"{kb.CB_BACK}type_select")
+        reply_markup=kb.load_more_list_keyboard(filtered, kb.CB_PREFIX_COUNTRY, 0, len(filtered), f"{kb.CB_BACK}type_select")
     )
     await state.set_state(OrderState.choosing_country)
 
@@ -172,34 +179,39 @@ async def cq_country_selected(callback: CallbackQuery, state: FSMContext):
     await state.update_data(country_id=country_id, country_name=country_name)
     await callback.message.edit_text(
         msg.SELECT_SERVICE,
-        reply_markup=kb.initial_selection_keyboard("list_services:1", "start_search_service", f"{kb.CB_BACK}country_select")
+        reply_markup=kb.initial_selection_keyboard("list_services:", "start_search_service", f"{kb.CB_BACK}country_select")
     )
     await state.set_state(OrderState.choosing_service)
 
-# --- SERVICE FLOW ---
-@main_router.callback_query(OrderState.choosing_service, F.data.startswith("list_services:"))
-async def cq_list_services(callback: CallbackQuery, state: FSMContext, page: int = 1):
-    if isinstance(callback.data, str) and callback.data.count(':'):
-        try: page = int(callback.data.split(':')[1])
-        except (ValueError, IndexError): page = 1
-    
+# --- SERVICE FLOW (with Load More) ---
+async def cq_show_services(callback: CallbackQuery, state: FSMContext, offset: int = 0):
+    """Shows a list of services with a 'Load More' button."""
     data = await state.get_data()
     all_services = await pva_service.get_services(data.get('country_id'), is_rent=data.get('is_rent', False))
     
-    start_index = (page - 1) * ITEMS_PER_PAGE
-    paginated_services = all_services[start_index : start_index + ITEMS_PER_PAGE]
-    total_pages = math.ceil(len(all_services) / ITEMS_PER_PAGE)
+    paginated_services = all_services[offset : offset + LOAD_MORE_COUNT]
     
-    new_text = f"Select a service (Page {page}/{total_pages}):"
-    new_markup = kb.paginated_list_keyboard(paginated_services, kb.CB_PREFIX_SERVICE, page, total_pages, f"{kb.CB_BACK}country_select")
-
+    reply_markup = kb.load_more_list_keyboard(
+        items=paginated_services,
+        prefix=kb.CB_PREFIX_SERVICE,
+        offset=offset,
+        total_count=len(all_services),
+        back_callback=f"{kb.CB_BACK}country_select"
+    )
+    
     try:
-        await callback.message.edit_text(new_text, reply_markup=new_markup)
+        await callback.message.edit_text("Select a service:", reply_markup=reply_markup)
     except aiogram.exceptions.TelegramBadRequest as e:
         if "message is not modified" in e.message:
             await callback.answer()
         else:
             raise
+            
+@main_router.callback_query(OrderState.choosing_service, F.data.startswith("list_services:"))
+async def cq_list_services(callback: CallbackQuery, state: FSMContext):
+    """Initial call to show the first batch of services."""
+    await callback.answer()
+    await cq_show_services(callback, state, offset=0)
 
 @main_router.callback_query(OrderState.choosing_service, F.data == "start_search_service")
 async def cq_start_search_service(callback: CallbackQuery, state: FSMContext):
@@ -215,7 +227,7 @@ async def process_service_search(message: Message, state: FSMContext):
     filtered = [s for s in all_services if search_query in s['name'].lower()]
     await message.answer(
         f"Found {len(filtered)} results:" if filtered else msg.NO_RESULTS,
-        reply_markup=kb.paginated_list_keyboard(filtered, kb.CB_PREFIX_SERVICE, 1, 1, f"{kb.CB_BACK}country_select")
+        reply_markup=kb.load_more_list_keyboard(filtered, kb.CB_PREFIX_SERVICE, 0, len(filtered), f"{kb.CB_BACK}country_select")
     )
     await state.set_state(OrderState.choosing_service)
 
