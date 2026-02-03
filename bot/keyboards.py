@@ -6,7 +6,7 @@ CB_PREFIX_COUNTRY = "country:"
 CB_PREFIX_SERVICE = "service:"
 CB_PREFIX_NUMBER_TYPE = "numtype:"
 CB_PREFIX_PAY = "pay:"
-CB_PREFIX_CANCEL = "cancel:"  # <--- This is the one that was missing
+CB_PREFIX_CANCEL = "cancel:"
 CB_BACK = "back:"
 
 # --- Main Menu & General Keyboards ---
@@ -30,26 +30,22 @@ def initial_selection_keyboard(list_callback: str, search_callback: str, back_ca
     builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data=back_callback))
     return builder.as_markup()
 
-def paginated_list_keyboard(items: list, prefix: str, page: int, total_pages: int, back_callback: str) -> InlineKeyboardMarkup:
-    """Creates a paginated keyboard for countries or services."""
+def load_more_list_keyboard(items: list, prefix: str, offset: int, total_count: int, back_callback: str) -> InlineKeyboardMarkup:
+    """
+    Creates a keyboard for a list with a 'Load More' button if there are more items.
+    """
     builder = InlineKeyboardBuilder()
     for item in items:
         builder.add(InlineKeyboardButton(text=item['name'], callback_data=f"{prefix}{item['id']}"))
-    
     builder.adjust(2)
-    
-    # Pagination controls
-    nav_buttons = []
-    # Strip the colon from prefix for the page callback data
-    clean_prefix = prefix.rstrip(':')
-    
-    if page > 1:
-        nav_buttons.append(InlineKeyboardButton(text="« Prev", callback_data=f"page:{clean_prefix}:{page-1}"))
-    if page < total_pages:
-        nav_buttons.append(InlineKeyboardButton(text="Next »", callback_data=f"page:{clean_prefix}:{page+1}"))
-    
-    if nav_buttons:
-        builder.row(*nav_buttons)
+
+    # If there are more items to load, show a 'Load More' button
+    if offset + len(items) < total_count:
+        next_offset = offset + len(items)
+        builder.row(InlineKeyboardButton(
+            text="➕ Load More", 
+            callback_data=f"load_more:{prefix.rstrip(':')}:{next_offset}"
+        ))
         
     builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data=back_callback))
     return builder.as_markup()
