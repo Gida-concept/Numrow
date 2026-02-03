@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload # <--- Added this import
 
 from models.user import User
 from models.payment import Payment
@@ -80,7 +81,8 @@ async def process_webhook_event(bot, session: AsyncSession, payload: dict) -> bo
         app_logger.warning("Webhook received without a reference.")
         return False
 
-    query = select(Payment).where(Payment.paystack_ref == reference).options(select(Payment.user))
+    # FIXED: Corrected the query to use selectinload
+    query = select(Payment).where(Payment.paystack_ref == reference).options(selectinload(Payment.user))
     result = await session.execute(query)
     payment = result.scalar_one_or_none()
 
