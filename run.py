@@ -20,18 +20,15 @@ async def paystack_webhook_handler(request: web.Request):
     Handles incoming webhooks from Paystack.
     """
     try:
-        # More robust way to get the JSON payload
         body = await request.read()
         
-        # Security: Verify the signature from Paystack
         signature = request.headers.get('x-paystack-signature')
         calculated_signature = hmac.new(settings.PAYSTACK_SECRET_KEY.encode('utf-8'), body, hashlib.sha512).hexdigest()
         
         if signature != calculated_signature:
             app_logger.error("Invalid Paystack signature. Ignoring webhook.")
-            return web.Response(status=401) # Unauthorized
+            return web.Response(status=401)
 
-        # Now that it's verified, we can safely parse and log it
         payload = json.loads(body)
         
         app_logger.critical("=" * 30)
@@ -41,7 +38,8 @@ async def paystack_webhook_handler(request: web.Request):
         app_logger.critical("=" * 30)
         
         async with async_session_factory() as session:
-            success = await process_webhook_event(session, payload)
+            # FIXED: Pass the 'bot', 'session', AND 'payload' arguments
+            success = await process_webhook_event(bot, session, payload)
         
         if success:
             app_logger.info("Webhook processed successfully, returning 200 OK.")
@@ -76,7 +74,6 @@ async def main():
     """Configures and runs all application components."""
     app_logger.info("Application starting up...")
 
-    # Initialize bot and database
     try:
         await bot.get_me()
         await set_bot_commands()
@@ -86,7 +83,6 @@ async def main():
         app_logger.critical(f"Initialization failed: {e}", exc_info=True)
         sys.exit(1)
 
-    # --- Start Web Server for Webhooks ---
     app = web.Application()
     app.router.add_post("/webhook/paystack", paystack_webhook_handler)
     
@@ -96,10 +92,8 @@ async def main():
     await site.start()
     app_logger.info("Webhook server started on port 8443.")
 
-    # --- Start Background Workers ---
     sms_worker_task = asyncio.create_task(sms_polling_worker(bot, async_session_factory))
     
-    # --- Start Bot Polling ---
     try:
         app_logger.info("Starting bot polling...")
         await start_bot_polling()
