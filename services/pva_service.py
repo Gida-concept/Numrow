@@ -88,7 +88,7 @@ class PvaService:
 
     # --- LIVE ACTIONS (BUYING & SMS) ---
     async def buy_number(self, service_id: str, country_id: str, country_name: str, is_rent: bool = False) -> Optional[dict]:
-        """LIVE: Purchases a new number."""
+        """LIVE: Purchases a new number with explicit parsing for rent vs temp."""
         services = await self.get_services(country_id, is_rent)
         service_full_name = next((s['name'] for s in services if s['id'] == service_id), None)
         
@@ -107,26 +107,37 @@ class PvaService:
                     raw_response_text = await response.text()
                     app_logger.info(f"RAW RESPONSE from {endpoint}: '{raw_response_text}'")
 
-                    # Ultra-robust parsing logic
-                    try:
-                        data = json.loads(raw_response_text)
-                        if is_rent and data.get('code') == 100:
-                            phone_number = data.get('data', '')
-                            sanitized_number = re.sub(r'[^\d+]', '', phone_number)
-                            if sanitized_number:
-                                return {"activation_id": sanitized_number, "phone_number": sanitized_number}
-                    except json.JSONDecodeError:
+                    # --- FINAL ROBUST PARSING LOGIC ---
+                    
+                    # 1. Handle RENT (expects JSON)
+                    if is_rent:
+                        try:
+                            data = json.loads(raw_response_text)
+                            if data.get('code') == 100:
+                                phone_number = data.get('data', '')
+                                sanitized_number = re.sub(r'[^\d+]', '', phone_number)
+                                if sanitized_number:
+                                    app_logger.info(f"Successfully parsed RENT number: {sanitized_number}")
+                                    return {"activation_id": sanitized_number, "phone_number": sanitized_number}
+                        except json.JSONDecodeError:
+                            app_logger.error(f"Rental API did not return valid JSON: {raw_response_text}")
+                            return None
+                    
+                    # 2. Handle TEMPORARY (expects plain text)
+                    else:
                         cleaned_text = raw_response_text.strip()
                         match = re.search(r'\+?\d{10,}', cleaned_text)
                         if match:
                             phone_number = match.group(0)
-                            app_logger.info(f"Successfully parsed phone number via regex: {phone_number}")
+                            app_logger.info(f"Successfully parsed TEMP number: {phone_number}")
                             return {"activation_id": phone_number, "phone_number": phone_number}
+
+                    # If we reach here, parsing failed for both types
+                    app_logger.warning(f"Could not extract a valid number from response: '{raw_response_text}'")
 
         except Exception as e:
             app_logger.error(f"Error during buy_number request: {e}")
 
-        # If all parsing fails, return None
         return None
 
     async def get_sms(self, phone_number: str, service_id: str, country_id: str, country_name: str, is_rent: bool = False) -> Optional[dict]:
