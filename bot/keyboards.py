@@ -6,7 +6,6 @@ CB_PREFIX_COUNTRY = "country:"
 CB_PREFIX_SERVICE = "service:"
 CB_PREFIX_NUMBER_TYPE = "numtype:"
 CB_PREFIX_PAY = "pay:"
-CB_PREFIX_CANCEL = "cancel:"
 CB_BACK = "back:"
 
 # --- Main Menu & General Keyboards ---
@@ -31,15 +30,12 @@ def initial_selection_keyboard(list_callback: str, search_callback: str, back_ca
     return builder.as_markup()
 
 def load_more_list_keyboard(items: list, prefix: str, offset: int, total_count: int, back_callback: str) -> InlineKeyboardMarkup:
-    """
-    Creates a keyboard for a list with a 'Load More' button if there are more items.
-    """
+    """Creates a keyboard for a list with a 'Load More' button."""
     builder = InlineKeyboardBuilder()
     for item in items:
         builder.add(InlineKeyboardButton(text=item['name'], callback_data=f"{prefix}{item['id']}"))
     builder.adjust(2)
 
-    # If there are more items to load, show a 'Load More' button
     if offset + len(items) < total_count:
         next_offset = offset + len(items)
         builder.row(InlineKeyboardButton(
@@ -56,6 +52,18 @@ def number_type_keyboard() -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="⏳ Temporary", callback_data=f"{CB_PREFIX_NUMBER_TYPE}temp"))
     builder.row(InlineKeyboardButton(text="🗓️ Rent", callback_data=f"{CB_PREFIX_NUMBER_TYPE}rent"))
     builder.row(InlineKeyboardButton(text="⬅️ Back to Main Menu", callback_data=f"{CB_BACK}main_menu"))
+    return builder.as_markup()
+
+# --- NEW: SMS Refresh Keyboard ---
+def refresh_sms_keyboard(number_id: int) -> InlineKeyboardMarkup:
+    """Creates a keyboard with a 'Refresh for SMS' button."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text="🔄 Refresh for SMS", 
+            callback_data=f"refresh_sms:{number_id}"
+        )
+    )
     return builder.as_markup()
 
 def payment_keyboard(price_ref: str) -> InlineKeyboardMarkup:
