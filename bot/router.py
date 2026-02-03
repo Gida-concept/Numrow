@@ -15,7 +15,7 @@ from services.pva_service import pva_service
 from workers import pricing_worker, payment_worker
 
 main_router = Router()
-ITEMS_PER_PAGE = 10 # Items per page for paginated lists
+ITEMS_PER_PAGE = 10
 
 class OrderState(StatesGroup):
     choosing_type = State()
@@ -81,22 +81,20 @@ async def cq_back_handler(callback: CallbackQuery, state: FSMContext):
     elif action == "type_select":
         await cq_order_number(callback, state)
     elif action == "country_select":
-        await callback.message.edit_text(
-            msg.SELECT_COUNTRY,
-            reply_markup=kb.initial_selection_keyboard("list_countries:1", "start_search_country", f"{kb.CB_BACK}type_select")
-        )
+        await callback.message.edit_text(msg.SELECT_COUNTRY, reply_markup=kb.initial_selection_keyboard("list_countries:1", "start_search_country", f"{kb.CB_BACK}type_select"))
         await state.set_state(OrderState.choosing_country)
     elif action == "service_select":
-        await callback.message.edit_text(
-            msg.SELECT_SERVICE,
-            reply_markup=kb.initial_selection_keyboard("list_services:1", "start_search_service", f"{kb.CB_BACK}country_select")
-        )
+        data = await state.get_data()
+        await callback.message.edit_text(msg.SELECT_SERVICE, reply_markup=kb.initial_selection_keyboard("list_services:1", "start_search_service", f"{kb.CB_BACK}country_select"))
         await state.set_state(OrderState.choosing_service)
 
 @main_router.callback_query(F.data.startswith("page:"))
 async def cq_page_handler(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
-    _, prefix, page_str = callback.data.split(':', 2)
+    parts = callback.data.split(':', 2)
+    if len(parts) != 3: return
+    
+    _, prefix, page_str = parts
     page = int(page_str)
     
     if prefix == kb.CB_PREFIX_COUNTRY:
@@ -118,15 +116,15 @@ async def cq_type_selected(callback: CallbackQuery, state: FSMContext):
 # --- COUNTRY FLOW ---
 @main_router.callback_query(OrderState.choosing_country, F.data.startswith("list_countries:"))
 async def cq_list_countries(callback: CallbackQuery, state: FSMContext, page: int = 1):
-    if isinstance(callback.data, str) and callback.data.count(':') > 0:
-        page = int(callback.data.split(':')[1])
+    if isinstance(callback.data, str) and callback.data.count(':'):
+        try: page = int(callback.data.split(':')[1])
+        except (ValueError, IndexError): page = 1
     
     data = await state.get_data()
     all_countries = await pva_service.get_countries(is_rent=data.get('is_rent', False))
     
     start_index = (page - 1) * ITEMS_PER_PAGE
-    end_index = start_index + ITEMS_PER_PAGE
-    paginated_countries = all_countries[start_index:end_index]
+    paginated_countries = all_countries[start_index : start_index + ITEMS_PER_PAGE]
     total_pages = math.ceil(len(all_countries) / ITEMS_PER_PAGE)
     
     await callback.message.edit_text(
@@ -171,15 +169,15 @@ async def cq_country_selected(callback: CallbackQuery, state: FSMContext):
 # --- SERVICE FLOW ---
 @main_router.callback_query(OrderState.choosing_service, F.data.startswith("list_services:"))
 async def cq_list_services(callback: CallbackQuery, state: FSMContext, page: int = 1):
-    if isinstance(callback.data, str) and callback.data.count(':') > 0:
-        page = int(callback.data.split(':')[1])
+    if isinstance(callback.data, str) and callback.data.count(':'):
+        try: page = int(callback.data.split(':')[1])
+        except (ValueError, IndexError): page = 1
     
     data = await state.get_data()
     all_services = await pva_service.get_services(data.get('country_id'), is_rent=data.get('is_rent', False))
     
     start_index = (page - 1) * ITEMS_PER_PAGE
-    end_index = start_index + ITEMS_PER_PAGE
-    paginated_services = all_services[start_index:end_index]
+    paginated_services = all_services[start_index : start_index + ITEMS_PER_PAGE]
     total_pages = math.ceil(len(all_services) / ITEMS_PER_PAGE)
     
     await callback.message.edit_text(
