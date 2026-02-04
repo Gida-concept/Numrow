@@ -79,11 +79,19 @@ class PvaService:
         return []
 
     async def get_price_and_duration(self, service_id: str, country_id: str, is_rent: bool = False) -> Optional[dict]:
+        """Gets price and duration for a specific service by re-fetching the service list."""
         services = await self.get_services(country_id, is_rent)
         for service in services:
             if service['id'] == service_id:
-                duration = DEFAULT_TEMP_DURATION_MINUTES
-                return {'cost_usd': service['cost_usd'], 'duration_minutes': duration}
+                # The API documentation implies a fixed duration for rentals,
+                # often 3 days. We'll use that as the assumption.
+                if is_rent:
+                    # Let's assume a standard 3-day rental period from the API's behavior
+                    duration_minutes = 3 * 24 * 60 
+                else:
+                    duration_minutes = DEFAULT_TEMP_DURATION_MINUTES
+                    
+                return {'cost_usd': service['cost_usd'], 'duration_minutes': duration_minutes}
         return None
 
     # --- LIVE ACTIONS (BUYING & SMS) ---
@@ -106,10 +114,7 @@ class PvaService:
                     response.raise_for_status()
                     raw_response_text = await response.text()
                     app_logger.info(f"RAW RESPONSE from {endpoint}: '{raw_response_text}'")
-
-                    # --- FINAL ROBUST PARSING LOGIC ---
                     
-                    # 1. Handle RENT (expects JSON)
                     if is_rent:
                         try:
                             data = json.loads(raw_response_text)
@@ -122,8 +127,6 @@ class PvaService:
                         except json.JSONDecodeError:
                             app_logger.error(f"Rental API did not return valid JSON: {raw_response_text}")
                             return None
-                    
-                    # 2. Handle TEMPORARY (expects plain text)
                     else:
                         cleaned_text = raw_response_text.strip()
                         match = re.search(r'\+?\d{10,}', cleaned_text)
@@ -132,20 +135,15 @@ class PvaService:
                             app_logger.info(f"Successfully parsed TEMP number: {phone_number}")
                             return {"activation_id": phone_number, "phone_number": phone_number}
 
-                    # If we reach here, parsing failed for both types
                     app_logger.warning(f"Could not extract a valid number from response: '{raw_response_text}'")
-
         except Exception as e:
             app_logger.error(f"Error during buy_number request: {e}")
-
         return None
 
     async def get_sms(self, phone_number: str, service_id: str, country_id: str, country_name: str, is_rent: bool = False) -> Optional[dict]:
         services = await self.get_services(country_id, is_rent)
         service_full_name = next((s['name'] for s in services if s['id'] == service_id), None)
-        
-        if not service_full_name:
-            return {"status": "ERROR"}
+        if not service_full_name: return {"status": "ERROR"}
         
         params = {'customer': self.api_key, 'number': phone_number, 'app': service_full_name, 'country': country_name}
         endpoint = "load_rent_code.php" if is_rent else "get_sms.php"
