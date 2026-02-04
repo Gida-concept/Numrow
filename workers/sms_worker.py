@@ -29,14 +29,12 @@ async def sms_polling_worker(bot: Bot, session_factory):
             async with session_factory() as session:
                 now_utc = datetime.now(timezone.utc)
                 
-                # Find all active, non-expired numbers and load their user relationship
                 query = (
                     select(Number)
                     .options(selectinload(Number.user))
                     .where(Number.status == "active", Number.expires_at > now_utc)
                 )
-                result = await session.execute(query)
-                active_numbers = result.scalars().all()
+                active_numbers = (await session.execute(query)).scalars().all()
 
                 if not active_numbers:
                     app_logger.debug("No active numbers to poll. Sleeping...")
@@ -44,21 +42,21 @@ async def sms_polling_worker(bot: Bot, session_factory):
                 for number in active_numbers:
                     app_logger.debug(f"Polling SMS for number {number.phone_number}")
 
-                    # Get the country name from the country_code
-                    countries = await pva_service.get_countries(is_rent=False)
+                    # Use the is_rent flag to determine the API call type
+                    is_rent = number.is_rent
+                    countries = await pva_service.get_countries(is_rent=is_rent)
                     country_name = next((c['name'] for c in countries if c['id'] == number.country_code), None)
 
                     if not country_name:
-                        app_logger.warning(f"Could not find country name for code {number.country_code}. Skipping number {number.phone_number}")
+                        app_logger.warning(f"Could not find country name for code {number.country_code}. Skipping.")
                         continue
 
-                    # Call get_sms with all required arguments
                     sms_data = await pva_service.get_sms(
                         phone_number=number.phone_number,
                         service_id=number.service_code,
                         country_id=number.country_code,
                         country_name=country_name,
-                        is_rent=False # Assume temp for now
+                        is_rent=is_rent
                     )
                     
                     if not sms_data or sms_data.get("status") != "OK":
@@ -68,58 +66,38 @@ async def sms_polling_worker(bot: Bot, session_factory):
                             await session.commit()
                         continue
 
-                    # Process new SMS
                     sms_text = sms_data.get('code', '')
                     pva_sms_id = f"{number.pva_activation_id}_{hash(sms_text)}"
-
                     redis_key = f"{REDIS_SMS_LAST_ID_PREFIX}:{number.id}"
                     last_seen_sms_id = await redis_client.get(redis_key)
 
                     if last_seen_sms_id != pva_sms_id:
                         app_logger.info(f"New SMS received for number {number.phone_number}!")
-                        
                         verification_code = _extract_code(sms_text)
-                        
-                        new_sms = Sms(
-                            number_id=number.id,
-                            pva_sms_id=pva_sms_id,
-                            full_text=sms_text,
-                            verification_code=verification_code
-                        )
+                        new_sms = Sms(number_id=number.id, pva_sms_id=pva_sms_id, full_text=sms_text, verification_code=verification_code)
                         session.add(new_sms)
-                        
-                        await bot.send_message(
-                            chat_id=number.user.telegram_id,
-                            text=msg.new_sms_message(verification_code, sms_text)
-                        )
-                        
+                        await bot.send_message(chat_id=number.user.telegram_id, text=msg.new_sms_message(verification_code, sms_text))
                         await session.commit()
                         await redis_client.set(redis_key, pva_sms_id)
                         app_logger.info(f"SMS for number {number.id} processed and sent to user {number.user.telegram_id}")
 
-                # Check for any numbers that expired based on our DB time
-                # We use selectinload to also fetch the user object efficiently
+                # This expiration logic now works for both temp and rent numbers
                 expired_numbers_query = (
-                    select(Number)
-                    .options(selectinload(Number.user))
+                    select(Number).options(selectinload(Number.user))
                     .where(Number.status == "active", Number.expires_at <= now_utc)
                 )
-                expired_result = await session.execute(expired_numbers_query)
-                
-                for number in expired_result.scalars().all():
-                    app_logger.info(f"Number {number.phone_number} expired based on internal timer. Deactivating.")
+                for number in (await session.execute(expired_numbers_query)).scalars().all():
+                    app_logger.info(f"Number {number.phone_number} expired. Deactivating.")
                     number.status = "expired"
-                    
-                    # Send the notification to the user
                     try:
-                        await bot.send_message(chat_id=number.user.telegram_id, text=msg.NUMBER_EXPIRED)
-                        app_logger.info(f"Sent expiration notice for number {number.phone_number} to user {number.user.telegram_id}")
+                        expiry_msg = f"Your rental for {number.phone_number} has expired." if number.is_rent else msg.NUMBER_EXPIRED
+                        await bot.send_message(chat_id=number.user.telegram_id, text=expiry_msg)
+                        app_logger.info(f"Sent expiration notice for {number.phone_number} to user {number.user.telegram_id}")
                     except Exception as e:
-                        app_logger.error(f"Failed to send expiration notice to user {number.user.telegram_id}: {e}")
+                        app_logger.error(f"Failed to send expiration notice: {e}")
                 
                 await session.commit()
 
         except Exception as e:
             app_logger.critical(f"Critical error in SMS worker: {e}", exc_info=True)
-
         await asyncio.sleep(POLLING_INTERVAL_SECONDS)
