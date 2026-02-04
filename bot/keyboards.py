@@ -1,14 +1,13 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-# --- Callback Data Prefixes ---
+# Prefixes
 CB_PREFIX_COUNTRY = "country:"
 CB_PREFIX_SERVICE = "service:"
 CB_PREFIX_NUMBER_TYPE = "numtype:"
 CB_PREFIX_PAY = "pay:"
 CB_BACK = "back:"
 
-# --- Main Menu & General Keyboards ---
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🛒 Order a Number", callback_data="order_number"))
@@ -45,25 +44,26 @@ def number_type_keyboard() -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="⬅️ Back to Main Menu", callback_data=f"{CB_BACK}main_menu"))
     return builder.as_markup()
 
-# --- NEW: Renewal & SMS Keyboards ---
-def rental_renewal_keyboard(number_id: int, price_ngn: int) -> InlineKeyboardMarkup:
-    """Creates a keyboard with a 'Renew Now' button showing the price."""
+def my_numbers_keyboard(numbers: list) -> InlineKeyboardMarkup:
+    """
+    Creates a dynamic keyboard for the 'My Numbers' list.
+    """
     builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(
-            text=f"💳 Renew Now for ₦{price_ngn:,.0f}", 
-            callback_data=f"renew_rental:{number_id}"
+    for number in numbers:
+        builder.row(
+            InlineKeyboardButton(
+                text=f"🔄 Refresh SMS for ...{number.phone_number[-4:]}",
+                callback_data=f"refresh_sms:{number.id}"
+            )
         )
-    )
+    builder.row(InlineKeyboardButton(text="⬅️ Back to Main Menu", callback_data=f"{CB_BACK}main_menu"))
     return builder.as_markup()
 
-def refresh_sms_keyboard(number_id: int) -> InlineKeyboardMarkup:
-    """Creates a keyboard with a 'Refresh for SMS' button."""
+def rental_renewal_keyboard(number_id: int, price_ngn: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🔄 Refresh for SMS", callback_data=f"refresh_sms:{number_id}"))
+    builder.row(InlineKeyboardButton(text=f"💳 Renew Now for ₦{price_ngn:,.0f}", callback_data=f"renew_rental:{number_id}"))
     return builder.as_markup()
 
-# --- Payment Keyboards ---
 def payment_keyboard(price_ref: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="💳 Pay Now", callback_data=f"{CB_PREFIX_PAY}{price_ref}"))
