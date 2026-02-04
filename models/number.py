@@ -1,110 +1,65 @@
-import time
-import uuid
-from typing import Optional
-from datetime import datetime, timedelta, timezone
+from __future__ import annotations
+from typing import TYPE_CHECKING
+from datetime import datetime
 
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy import String, DateTime, ForeignKey, Boolean
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from models.user import User
-from models.payment import Payment
-from models.number import Number
-from services.paystack_service import paystack_service
-from services.pva_service import pva_service
-from utils.logger import app_logger
-from config.constants import REDIS_PRICING_LOCK_PREFIX, PRICE_LOCK_DURATION, DEFAULT_TEMP_DURATION_MINUTES
-from database.redis import redis_client
-import bot.messages as msg
-from bot.keyboards import refresh_sms_keyboard
+from models.base import BaseModel
 
-async def create_payment_link(session: AsyncSession, user_id: int, final_ngn_price: int, price_ref: str) -> Optional[str]:
-    try:
-        user = await session.get(User, user_id)
-        if not user: return None
-        user_email = f"user_{user.telegram_id}@numrow.com"
-        amount_kobo = final_ngn_price * 100
-        transaction_ref = f"pva-{user.id}-{uuid.uuid4().hex[:8]}"
-        new_payment = Payment(user_id=user.id, amount_ngn=amount_kobo, status="pending", paystack_ref=transaction_ref, locked_price_ref=price_ref)
-        session.add(new_payment)
-        await session.commit()
-        await session.refresh(new_payment)
-        lock_key = f"{REDIS_PRICING_LOCK_PREFIX}:{new_payment.id}"
-        await redis_client.set(lock_key, price_ref, ex=PRICE_LOCK_DURATION)
-        payment_url = await paystack_service.initialize_transaction(email=user_email, amount_kobo=amount_kobo, reference=transaction_ref)
-        return payment_url
-    except Exception as e:
-        app_logger.error(f"Failed to create payment link: {e}", exc_info=True)
-        await session.rollback()
-        return None
+if TYPE_CHECKING:
+    from .user import User
+    from .payment import Payment
+    from .sms import Sms
+    # Remove the self-import and the Rental import to break the loop
+    # from .number import Number
+    # from .rental import Rental
 
-async def process_webhook_event(bot, session: AsyncSession, payload: dict) -> bool:
-    event, data = payload.get("event"), payload.get("data")
-    if event != "charge.success": return False
-    reference = data.get("reference")
-    if not reference: return False
+class Number(BaseModel):
+    """
+    Represents a phone number purchased by a user, for either temporary or rental use.
+    """
+    __tablename__ = "numbers"
 
-    query = select(Payment).where(Payment.paystack_ref == reference).options(selectinload(Payment.user))
-    payment = (await session.execute(query)).scalar_one_or_none()
-    if not payment: return False
-    if payment.status == "successful": return True
+    phone_number: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    pva_activation_id: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+    service_code: Mapped[str] = mapped_column(String(20), nullable=False)
+    country_code: Mapped[str] = mapped_column(String(10), nullable=False)
+    status: Mapped[str] = mapped_column(String(50), default="active", nullable=False, index=True)
 
-    verified_status, verified_amount_kobo = await paystack_service.verify_transaction(reference)
-    if verified_status != "success":
-        payment.status = "failed"
-        await session.commit()
-        return False
-    if verified_amount_kobo != payment.amount_ngn:
-        payment.status = "disputed"
-        await session.commit()
-        return False
+    is_rent: Mapped[bool] = mapped_column(
+        Boolean, 
+        default=False, 
+        nullable=False,
+        index=True,
+        comment="True if this is a long-term rental, False if temporary."
+    )
+    renewal_notice_sent: Mapped[bool] = mapped_column(
+        Boolean, 
+        default=False, 
+        nullable=False,
+        comment="True if a renewal warning has been sent for a rental number."
+    )
 
-    payment.status = "successful"
-    await session.commit()
-    app_logger.info(f"Payment {payment.id} (ref: {reference}) successfully updated.")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
-    try:
-        parts = payment.locked_price_ref.split(":")
-        country_id, service_id, number_type = parts[1], parts[2], parts[3]
-        is_rent = (number_type == 'rent')
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    payment_id: Mapped[int] = mapped_column(ForeignKey("payments.id", ondelete="CASCADE"), unique=True, nullable=False)
 
-        countries = await pva_service.get_countries(is_rent=is_rent)
-        country_name = next((c['name'] for c in countries if c['id'] == country_id), None)
-        if not country_name: return False
-
-        app_logger.info(f"Triggering number purchase for service ID '{service_id}' in country '{country_name}'.")
-        purchased_number_info = await pva_service.buy_number(service_id=service_id, country_id=country_id, country_name=country_name, is_rent=is_rent)
-
-        if purchased_number_info:
-            app_logger.info(f"Successfully purchased number for payment {payment.id}: {purchased_number_info}")
-            if is_rent:
-                expiry_delta = timedelta(days=3)
-            else:
-                expiry_delta = timedelta(minutes=DEFAULT_TEMP_DURATION_MINUTES)
-            
-            new_number = Number(
-                phone_number=purchased_number_info['phone_number'],
-                pva_activation_id=purchased_number_info['activation_id'],
-                service_code=service_id, country_code=country_id, status="active",
-                is_rent=is_rent,
-                expires_at=datetime.now(timezone.utc) + expiry_delta,
-                user_id=payment.user_id, payment_id=payment.id
-            )
-            session.add(new_number)
-            await session.commit()
-            await session.refresh(new_number)
-            
-            expiry_string = f"in {expiry_delta.days} days" if is_rent else f"in {expiry_delta.seconds // 60} minutes"
-            await bot.send_message(
-                chat_id=payment.user.telegram_id, 
-                text=msg.number_issued_message(new_number.phone_number, expiry_string),
-                reply_markup=refresh_sms_keyboard(new_number.id)
-            )
-        else:
-            app_logger.error(f"Failed to purchase number for successful payment {payment.id}.")
-            await bot.send_message(chat_id=payment.user.telegram_id, text="We received your payment, but there was an error ordering your number. Please contact support.")
+    user: Mapped["User"] = relationship("User", back_populates="numbers")
+    payment: Mapped["Payment"] = relationship("Payment", back_populates="number")
     
-    except Exception as e:
-        app_logger.critical(f"Error triggering number purchase for payment {payment.id}: {e}", exc_info=True)
-        return False
-    return True
+    sms_messages: Mapped[list["Sms"]] = relationship(
+        "Sms",
+        back_populates="number",
+        cascade="all, delete-orphan"
+    )
+    
+    # This line was causing the circular import. We remove it.
+    # rental: Mapped["Rental"] = relationship("Rental", back_populates="number")
+
+    def __repr__(self) -> str:
+        return (
+            f"<Number(id={self.id}, phone_number='{self.phone_number}', "
+            f"status='{self.status}', is_rent={self.is_rent})>"
+        )
