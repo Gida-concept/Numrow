@@ -68,7 +68,7 @@ async def process_webhook_event(bot, session: AsyncSession, payload: dict) -> bo
     app_logger.info(f"Payment {payment.id} (ref: {reference}) successfully updated.")
 
     try:
-        # Check if this is a renewal payment based on the reference prefix
+        # Check if this is a renewal payment
         if payment.locked_price_ref.startswith("renewal:"):
             number_to_renew_id = int(payment.locked_price_ref.split(':')[1])
             number_to_renew = await session.get(Number, number_to_renew_id)
@@ -89,7 +89,7 @@ async def process_webhook_event(bot, session: AsyncSession, payload: dict) -> bo
                 # Update the expiry date in our database (assuming 3-day renewal)
                 new_expiry = number_to_renew.expires_at + timedelta(days=3)
                 number_to_renew.expires_at = new_expiry
-                number_to_renew.renewal_notice_sent = False # Reset the notice flag for the next cycle
+                number_to_renew.renewal_notice_sent = False # Reset the notice flag
                 await session.commit()
                 app_logger.info(f"Successfully updated expiry for number {number_to_renew.phone_number} to {new_expiry}")
                 await bot.send_message(chat_id=payment.user.telegram_id, text=f"✅ Your rental for {number_to_renew.phone_number} has been successfully renewed!")
