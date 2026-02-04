@@ -44,5 +44,6 @@ async def init_db():
     
     async with engine.begin() as conn:
         # This will WIPE your database clean and recreate all tables with the new schema.
-        await conn.run_sync(Base.metadata.drop_all) # <-- TEMPORARILY UNCOMMENTED
+        #await conn.run_sync(Base.metadata.drop_all) # <-- TEMPORARILY UNCOMMENTED
         await conn.run_sync(Base.metadata.create_all)
+
