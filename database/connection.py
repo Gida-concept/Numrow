@@ -35,9 +35,7 @@ async def init_db():
     # Import Base FIRST
     from models.base import Base
     
-    # CRITICAL: Import ALL models in the correct order to ensure
-    # SQLAlchemy can resolve foreign key dependencies.
-    # The order matters: parent tables before child tables.
+    # CRITICAL: Import ALL models to register them with the metadata
     from models.user import User
     from models.payment import Payment
     from models.number import Number
@@ -45,5 +43,6 @@ async def init_db():
     from models.rental import Rental
     
     async with engine.begin() as conn:
-        # Create all tables
+        # This will WIPE your database clean and recreate all tables with the new schema.
+        await conn.run_sync(Base.metadata.drop_all) # <-- TEMPORARILY UNCOMMENTED
         await conn.run_sync(Base.metadata.create_all)
