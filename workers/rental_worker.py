@@ -12,7 +12,7 @@ from workers.pricing_worker import get_final_price
 from bot.keyboards import rental_renewal_keyboard
 
 RENEWAL_WARNING_DAYS = 3
-POLLING_INTERVAL_SECONDS = 3600 # Check once per hour
+POLLING_INTERVAL_SECONDS = 3600
 
 async def rental_status_worker(bot: Bot, session_factory):
     app_logger.info("Rental Status Worker started.")
@@ -30,24 +30,17 @@ async def rental_status_worker(bot: Bot, session_factory):
                         Number.is_rent == True,
                         Number.status == "active",
                         Number.expires_at <= warning_date,
-                        Number.renewal_notice_sent == False # Only send once
+                        Number.renewal_notice_sent == False
                     )
                 )
                 expiring_numbers = (await session.execute(expiring_query)).scalars().all()
 
                 for number in expiring_numbers:
                     app_logger.info(f"Rental number {number.phone_number} is expiring soon. Sending warning.")
-                    
-                    # Get the renewal price
-                    price_ngn, _, __ = await get_final_price(
-                        country_id=number.country_code,
-                        service_id=number.service_code,
-                        is_rent=True
-                    )
+                    price_ngn, _, __ = await get_final_price(country_id=number.country_code, service_id=number.service_code, is_rent=True)
 
                     if price_ngn:
                         try:
-                            # Send renewal warning message with the price
                             await bot.send_message(
                                 chat_id=number.user.telegram_id,
                                 text=f"⚠️ Your rental for {number.phone_number} will expire in less than {RENEWAL_WARNING_DAYS} days. Renew now to keep your number.",
@@ -62,13 +55,8 @@ async def rental_status_worker(bot: Bot, session_factory):
 
                 # --- 2. Find numbers that have already expired ---
                 expired_query = (
-                    select(Number)
-                    .options(selectinload(Number.user))
-                    .where(
-                        Number.is_rent == True,
-                        Number.status == "active",
-                        Number.expires_at <= now_utc
-                    )
+                    select(Number).options(selectinload(Number.user))
+                    .where(Number.is_rent == True, Number.status == "active", Number.expires_at <= now_utc)
                 )
                 expired_numbers = (await session.execute(expired_query)).scalars().all()
                 for number in expired_numbers:
@@ -77,11 +65,9 @@ async def rental_status_worker(bot: Bot, session_factory):
                     try:
                         await bot.send_message(chat_id=number.user.telegram_id, text=f"Your rental for {number.phone_number} has expired.")
                     except Exception as e:
-                        app_logger.error(f"Failed to send rental expiration notice to user {number.user.telegram_id}: {e}")
+                        app_logger.error(f"Failed to send rental expiration notice: {e}")
                 
                 await session.commit()
-
         except Exception as e:
             app_logger.critical(f"Critical error in Rental Status Worker: {e}", exc_info=True)
-
         await asyncio.sleep(POLLING_INTERVAL_SECONDS)
